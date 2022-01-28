@@ -1,0 +1,16 @@
+[package]
+name = "lickety"
+version = "0.1.0"
+authors = ["Michael Rawson <michael@rawsons.uk>"]
+edition = "2021"
+description = "linear resolution with splitting"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+fnv = "1"
+tptp = "0.31"
+
+[dependencies.clap]
+version = "3"
+features = ["derive"]
