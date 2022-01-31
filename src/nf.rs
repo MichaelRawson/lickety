@@ -1,7 +1,6 @@
 use crate::builder::Builder;
 use crate::syntax::*;
-use crate::util::*;
-use std::rc::Rc;
+use crate::util::VarSet;
 
 #[derive(Default)]
 pub(crate) struct NormalForm {
@@ -63,7 +62,7 @@ impl NormalForm {
         *fresh_symbol += 1;
         let name = Name::Skolem(self.fresh_skolem);
         self.fresh_skolem += 1;
-        let symbol = Rc::new(Symbol {
+        let symbol = SymbolRef::new(Symbol {
             number,
             arity,
             sort,
@@ -112,7 +111,8 @@ impl NormalForm {
                 } else {
                     unreachable!()
                 };
-                if let (Name::Equality, [s, t]) = (&f.name, ts.as_slice()) {
+                // todo abstract
+                if let (Name::Equality, [s, t]) = (&f.symbol.name, ts.as_slice()) {
                     if s == t {
                         continue 'clauses;
                     }

@@ -50,34 +50,26 @@ struct SymbolEntry<'a> {
 #[derive(Default)]
 struct Loader {
     nf: NormalForm,
-    equality: Option<Rc<syntax::Symbol>>,
+    equality: Option<syntax::SymbolRef>,
     fresh_variable: usize,
     fresh_symbol: usize,
-    free: Vec<(&'static str, usize)>,
-    bound: Vec<(&'static str, usize)>,
-    lower: FnvHashMap<SymbolEntry<'static>, Rc<syntax::Symbol>>,
-    quoted: FnvHashMap<SymbolEntry<'static>, Rc<syntax::Symbol>>,
-    number: FnvHashMap<String, Rc<syntax::Symbol>>,
-    distinct: FnvHashMap<String, Rc<syntax::Symbol>>,
-}
-
-unsafe fn extend_lifetime_of_variable(x: &str) -> &'static str {
-    std::mem::transmute(x)
+    lower: FnvHashMap<SymbolEntry<'static>, syntax::SymbolRef>,
+    quoted: FnvHashMap<SymbolEntry<'static>, syntax::SymbolRef>,
+    number: FnvHashMap<String, syntax::SymbolRef>,
+    distinct: FnvHashMap<String, syntax::SymbolRef>,
 }
 
 impl Loader {
-    fn get_equality_symbol(&mut self) -> Rc<syntax::Symbol> {
-        self.equality.clone().unwrap_or_else(|| {
+    fn get_equality_symbol(&mut self) -> syntax::SymbolRef {
+        *self.equality.get_or_insert_with(|| {
             let number = self.fresh_symbol;
             self.fresh_symbol += 1;
-            let equality = Rc::new(syntax::Symbol {
+            syntax::SymbolRef::new(syntax::Symbol {
                 number,
                 arity: 2,
                 sort: syntax::Sort::Boolean,
                 name: syntax::Name::Equality,
-            });
-            self.equality = Some(equality.clone());
-            equality
+            })
         })
     }
 
@@ -93,31 +85,32 @@ impl Loader {
             }
             common::DefinedTerm::Distinct(ref distinct) => (&mut self.distinct, distinct.0),
         };
-        let sym = if let Some(sym) = lookup.get(borrowed) {
-            sym.clone()
+        let symbol = if let Some(symbol) = lookup.get(borrowed) {
+            *symbol
         } else {
             let number = self.fresh_symbol;
             self.fresh_symbol += 1;
-            let string = borrowed.to_string();
             let name = match term {
-                common::DefinedTerm::Number(_) => syntax::Name::Number(string.clone()),
-                common::DefinedTerm::Distinct(_) => syntax::Name::Distinct(string.clone()),
+                common::DefinedTerm::Number(_) => syntax::Name::Number(borrowed.to_owned()),
+                common::DefinedTerm::Distinct(_) => syntax::Name::Distinct(borrowed.to_owned()),
             };
-            let sym = Rc::new(syntax::Symbol {
+            let symbol = syntax::SymbolRef::new(syntax::Symbol {
                 number,
                 arity: 0,
                 sort,
                 name,
             });
-            lookup.insert(string, sym.clone());
-            sym
+            lookup.insert(borrowed.to_owned(), symbol);
+            symbol
         };
-        syntax::FofTerm::Function(sym, vec![])
+        syntax::FofTerm::Function(symbol, vec![])
     }
 
-    fn fof_plain_term(
+    fn fof_plain_term<'a>(
         &mut self,
-        term: PlainTerm,
+        bound: &[(&str, usize)],
+        free: &mut Vec<(&'a str, usize)>,
+        term: PlainTerm<'a>,
         sort: syntax::Sort,
     ) -> anyhow::Result<syntax::FofTerm> {
         let (sym, args) = match term {
@@ -131,8 +124,8 @@ impl Loader {
         };
         let name = Cow::Borrowed(borrowed);
         let entry = SymbolEntry { arity, sort, name };
-        let sym = if let Some(sym) = lookup.get(&entry) {
-            sym.clone()
+        let symbol = if let Some(symbol) = lookup.get(&entry) {
+            *symbol
         } else {
             let number = self.fresh_symbol;
             self.fresh_symbol += 1;
@@ -143,20 +136,20 @@ impl Loader {
                 AtomicWord::Lower(_) => syntax::Name::Atom(string),
                 AtomicWord::SingleQuoted(_) => syntax::Name::Quoted(string),
             };
-            let sym = Rc::new(syntax::Symbol {
+            let symbol = syntax::SymbolRef::new(syntax::Symbol {
                 number,
                 arity,
                 sort,
                 name,
             });
-            lookup.insert(entry, sym.clone());
-            sym
+            lookup.insert(entry, symbol);
+            symbol
         };
         let args = args
             .into_iter()
-            .map(|t| self.fof_term(t, syntax::Sort::Individual))
+            .map(|t| self.fof_term(bound, free, t, syntax::Sort::Individual))
             .collect::<anyhow::Result<_>>()?;
-        Ok(syntax::FofTerm::Function(sym, args))
+        Ok(syntax::FofTerm::Function(symbol, args))
     }
 
     fn fof_defined_term(
@@ -172,36 +165,42 @@ impl Loader {
         }
     }
 
-    fn fof_function_term(
+    fn fof_function_term<'a>(
         &mut self,
-        term: FunctionTerm,
+        bound: &[(&str, usize)],
+        free: &mut Vec<(&'a str, usize)>,
+        term: FunctionTerm<'a>,
         sort: syntax::Sort,
     ) -> anyhow::Result<syntax::FofTerm> {
         match term {
-            FunctionTerm::Plain(term) => self.fof_plain_term(term, sort),
+            FunctionTerm::Plain(term) => self.fof_plain_term(bound, free, term, sort),
             FunctionTerm::Defined(def) => self.fof_defined_term(def, sort),
             FunctionTerm::System(system) => Err(anyhow!("unsupported system term: {}", system)),
         }
     }
 
-    fn fof_term(&mut self, term: Term, sort: syntax::Sort) -> anyhow::Result<syntax::FofTerm> {
+    fn fof_term<'a>(
+        &mut self,
+        bound: &[(&str, usize)],
+        free: &mut Vec<(&'a str, usize)>,
+        term: Term<'a>,
+        sort: syntax::Sort,
+    ) -> anyhow::Result<syntax::FofTerm> {
         Ok(match term {
-            Term::Function(term) => self.fof_function_term(*term, sort)?,
+            Term::Function(term) => self.fof_function_term(bound, free, *term, sort)?,
             Term::Variable(x) => {
                 let name = x.0 .0;
-                let var = if let Some((_, var)) =
-                    self.bound.iter().rev().find(|(bound, _)| *bound == name)
-                {
-                    *var
-                } else if let Some((_, var)) = self.free.iter().find(|(free, _)| *free == name) {
-                    *var
-                } else {
-                    let var = self.fresh_variable;
-                    let name = unsafe { extend_lifetime_of_variable(name) };
-                    self.free.push((name, var));
-                    self.fresh_variable += 1;
-                    var
-                };
+                let var =
+                    if let Some((_, var)) = bound.iter().rev().find(|(bound, _)| *bound == name) {
+                        *var
+                    } else if let Some((_, var)) = free.iter().find(|(free, _)| *free == name) {
+                        *var
+                    } else {
+                        let var = self.fresh_variable;
+                        free.push((name, var));
+                        self.fresh_variable += 1;
+                        var
+                    };
                 syntax::FofTerm::Variable(var)
             }
         })
@@ -223,9 +222,11 @@ impl Loader {
         }
     }
 
-    fn fof_defined_atomic_formula(
+    fn fof_defined_atomic_formula<'a>(
         &mut self,
-        atom: DefinedAtomicFormula,
+        bound: &[(&str, usize)],
+        free: &mut Vec<(&'a str, usize)>,
+        atom: DefinedAtomicFormula<'a>,
     ) -> anyhow::Result<syntax::FofAtomic> {
         Ok(match atom {
             DefinedAtomicFormula::Plain(plain) => self.fof_defined_plain_formula(plain)?,
@@ -233,61 +234,91 @@ impl Loader {
                 syntax::FofAtomic::Predicate(syntax::FofTerm::Function(
                     self.get_equality_symbol(),
                     vec![
-                        self.fof_term(*infix.left, syntax::Sort::Individual)?,
-                        self.fof_term(*infix.right, syntax::Sort::Individual)?,
+                        self.fof_term(bound, free, *infix.left, syntax::Sort::Individual)?,
+                        self.fof_term(bound, free, *infix.right, syntax::Sort::Individual)?,
                     ],
                 ))
             }
         })
     }
 
-    fn fof_atomic_formula(&mut self, atom: AtomicFormula) -> anyhow::Result<syntax::FofAtomic> {
+    fn fof_atomic_formula<'a>(
+        &mut self,
+        bound: &[(&str, usize)],
+        free: &mut Vec<(&'a str, usize)>,
+        atom: AtomicFormula<'a>,
+    ) -> anyhow::Result<syntax::FofAtomic> {
         match atom {
-            AtomicFormula::Plain(plain) => Ok(syntax::FofAtomic::Predicate(
-                self.fof_plain_term(plain.0, syntax::Sort::Boolean)?,
-            )),
-            AtomicFormula::Defined(defined) => Ok(self.fof_defined_atomic_formula(defined)?),
+            AtomicFormula::Plain(plain) => Ok(syntax::FofAtomic::Predicate(self.fof_plain_term(
+                bound,
+                free,
+                plain.0,
+                syntax::Sort::Boolean,
+            )?)),
+            AtomicFormula::Defined(defined) => {
+                Ok(self.fof_defined_atomic_formula(bound, free, defined)?)
+            }
             AtomicFormula::System(system) => Err(anyhow!("unsupported system formula: {}", system)),
         }
     }
 
-    fn fof_infix_unary(&mut self, infix: InfixUnary) -> anyhow::Result<syntax::Fof> {
+    fn fof_infix_unary<'a>(
+        &mut self,
+        bound: &[(&str, usize)],
+        free: &mut Vec<(&'a str, usize)>,
+        infix: InfixUnary<'a>,
+    ) -> anyhow::Result<syntax::Fof> {
         Ok(syntax::Fof::Not(Box::new(syntax::Fof::Atom(
             syntax::FofAtomic::Predicate(syntax::FofTerm::Function(
                 self.get_equality_symbol(),
                 vec![
-                    self.fof_term(*infix.left, syntax::Sort::Individual)?,
-                    self.fof_term(*infix.right, syntax::Sort::Individual)?,
+                    self.fof_term(bound, free, *infix.left, syntax::Sort::Individual)?,
+                    self.fof_term(bound, free, *infix.right, syntax::Sort::Individual)?,
                 ],
             )),
         ))))
     }
 
-    fn fof_unit_formula(&mut self, fof: UnitFormula) -> anyhow::Result<syntax::Fof> {
+    fn fof_unit_formula<'a>(
+        &mut self,
+        bound: &mut Vec<(&'a str, usize)>,
+        free: &mut Vec<(&'a str, usize)>,
+        fof: UnitFormula<'a>,
+    ) -> anyhow::Result<syntax::Fof> {
         match fof {
-            UnitFormula::Unitary(f) => self.fof_unitary_formula(f),
-            UnitFormula::Unary(f) => self.fof_unary_formula(f),
+            UnitFormula::Unitary(f) => self.fof_unitary_formula(bound, free, f),
+            UnitFormula::Unary(f) => self.fof_unary_formula(bound, free, f),
         }
     }
 
-    fn fof_binary_assoc(&mut self, fof: BinaryAssoc) -> anyhow::Result<syntax::Fof> {
+    fn fof_binary_assoc<'a>(
+        &mut self,
+        bound: &mut Vec<(&'a str, usize)>,
+        free: &mut Vec<(&'a str, usize)>,
+        fof: BinaryAssoc<'a>,
+    ) -> anyhow::Result<syntax::Fof> {
         Ok(match fof {
             BinaryAssoc::And(fs) => syntax::Fof::And(
                 fs.0.into_iter()
-                    .map(|f| self.fof_unit_formula(f))
+                    .map(|f| self.fof_unit_formula(bound, free, f))
                     .collect::<anyhow::Result<_>>()?,
             ),
             BinaryAssoc::Or(fs) => syntax::Fof::Or(
                 fs.0.into_iter()
-                    .map(|f| self.fof_unit_formula(f))
+                    .map(|f| self.fof_unit_formula(bound, free, f))
                     .collect::<anyhow::Result<_>>()?,
             ),
         })
     }
 
-    fn fof_binary_nonassoc(&mut self, fof: BinaryNonassoc) -> anyhow::Result<syntax::Fof> {
-        let left = self.fof_unit_formula(*fof.left)?;
-        let right = self.fof_unit_formula(*fof.right)?;
+    fn fof_binary_nonassoc<'a>(
+        &mut self,
+        bound: &mut Vec<(&'a str, usize)>,
+        free: &mut Vec<(&'a str, usize)>,
+        fof: BinaryNonassoc<'a>,
+    ) -> anyhow::Result<syntax::Fof> {
+        let left = self.fof_unit_formula(bound, free, *fof.left)?;
+        let right = self.fof_unit_formula(bound, free, *fof.right)?;
         use NonassocConnective as NC;
         Ok(match fof.op {
             NC::LRImplies => syntax::Fof::Or(vec![syntax::Fof::Not(Box::new(left)), right]),
@@ -302,25 +333,34 @@ impl Loader {
         })
     }
 
-    fn fof_binary_formula(&mut self, fof: BinaryFormula) -> anyhow::Result<syntax::Fof> {
+    fn fof_binary_formula<'a>(
+        &mut self,
+        bound: &mut Vec<(&'a str, usize)>,
+        free: &mut Vec<(&'a str, usize)>,
+        fof: BinaryFormula<'a>,
+    ) -> anyhow::Result<syntax::Fof> {
         match fof {
-            BinaryFormula::Assoc(f) => self.fof_binary_assoc(f),
-            BinaryFormula::Nonassoc(f) => self.fof_binary_nonassoc(f),
+            BinaryFormula::Assoc(f) => self.fof_binary_assoc(bound, free, f),
+            BinaryFormula::Nonassoc(f) => self.fof_binary_nonassoc(bound, free, f),
         }
     }
 
-    fn fof_quantified_formula(&mut self, fof: QuantifiedFormula) -> anyhow::Result<syntax::Fof> {
+    fn fof_quantified_formula<'a>(
+        &mut self,
+        bound: &mut Vec<(&'a str, usize)>,
+        free: &mut Vec<(&'a str, usize)>,
+        fof: QuantifiedFormula<'a>,
+    ) -> anyhow::Result<syntax::Fof> {
         let num_bound = fof.bound.0.len();
         for x in fof.bound.0.into_iter() {
             let name = x.0 .0;
             let var = self.fresh_variable;
             self.fresh_variable += 1;
-            let name = unsafe { extend_lifetime_of_variable(name) };
-            self.bound.push((name, var));
+            bound.push((name, var));
         }
-        let mut f = self.fof_unit_formula(*fof.formula)?;
+        let mut f = self.fof_unit_formula(bound, free, *fof.formula)?;
         for _ in 0..num_bound {
-            let (_, var) = self.bound.pop().expect("bound this earlier");
+            let (_, var) = bound.pop().expect("bound this earlier");
             f = match fof.quantifier {
                 Quantifier::Forall => syntax::Fof::Forall(var, Box::new(f)),
                 Quantifier::Exists => syntax::Fof::Exists(var, Box::new(f)),
@@ -329,40 +369,71 @@ impl Loader {
         Ok(f)
     }
 
-    fn fof_unitary_formula(&mut self, fof: UnitaryFormula) -> anyhow::Result<syntax::Fof> {
+    fn fof_unitary_formula<'a>(
+        &mut self,
+        bound: &mut Vec<(&'a str, usize)>,
+        free: &mut Vec<(&'a str, usize)>,
+        fof: UnitaryFormula<'a>,
+    ) -> anyhow::Result<syntax::Fof> {
         Ok(match fof {
-            UnitaryFormula::Quantified(f) => self.fof_quantified_formula(f)?,
-            UnitaryFormula::Atomic(f) => syntax::Fof::Atom(self.fof_atomic_formula(*f)?),
-            UnitaryFormula::Parenthesised(f) => self.fof_logic_formula(*f)?,
+            UnitaryFormula::Quantified(f) => self.fof_quantified_formula(bound, free, f)?,
+            UnitaryFormula::Atomic(f) => {
+                syntax::Fof::Atom(self.fof_atomic_formula(bound, free, *f)?)
+            }
+            UnitaryFormula::Parenthesised(f) => self.fof_logic_formula(bound, free, *f)?,
         })
     }
 
-    fn fof_unary_formula(&mut self, fof: UnaryFormula) -> anyhow::Result<syntax::Fof> {
+    fn fof_unary_formula<'a>(
+        &mut self,
+        bound: &mut Vec<(&'a str, usize)>,
+        free: &mut Vec<(&'a str, usize)>,
+        fof: UnaryFormula<'a>,
+    ) -> anyhow::Result<syntax::Fof> {
         Ok(match fof {
-            UnaryFormula::Unary(_, f) => syntax::Fof::Not(Box::new(self.fof_unit_formula(*f)?)),
-            UnaryFormula::InfixUnary(f) => self.fof_infix_unary(f)?,
+            UnaryFormula::Unary(_, f) => {
+                syntax::Fof::Not(Box::new(self.fof_unit_formula(bound, free, *f)?))
+            }
+            UnaryFormula::InfixUnary(f) => self.fof_infix_unary(bound, free, f)?,
         })
     }
 
-    fn fof_logic_formula(&mut self, fof: LogicFormula) -> anyhow::Result<syntax::Fof> {
+    fn fof_logic_formula<'a>(
+        &mut self,
+        bound: &mut Vec<(&'a str, usize)>,
+        free: &mut Vec<(&'a str, usize)>,
+        fof: LogicFormula<'a>,
+    ) -> anyhow::Result<syntax::Fof> {
         match fof {
-            LogicFormula::Binary(f) => self.fof_binary_formula(f),
-            LogicFormula::Unary(f) => self.fof_unary_formula(f),
-            LogicFormula::Unitary(f) => self.fof_unitary_formula(f),
+            LogicFormula::Binary(f) => self.fof_binary_formula(bound, free, f),
+            LogicFormula::Unary(f) => self.fof_unary_formula(bound, free, f),
+            LogicFormula::Unitary(f) => self.fof_unitary_formula(bound, free, f),
         }
     }
 
     fn fof_formula(&mut self, fof: fof::Formula) -> anyhow::Result<syntax::Fof> {
-        self.fof_logic_formula(fof.0)
+        let mut bound = vec![];
+        let mut free = vec![];
+        let mut formula = self.fof_logic_formula(&mut bound, &mut free, fof.0)?;
+        while let Some((_, free)) = free.pop() {
+            formula = syntax::Fof::Forall(free, Box::new(formula));
+        }
+        Ok(formula)
     }
 
-    fn literal(&mut self, lit: Literal) -> anyhow::Result<syntax::Fof> {
+    fn literal<'a>(
+        &mut self,
+        free: &mut Vec<(&'a str, usize)>,
+        lit: Literal<'a>,
+    ) -> anyhow::Result<syntax::Fof> {
         Ok(match lit {
-            Literal::Atomic(atomic) => syntax::Fof::Atom(self.fof_atomic_formula(atomic)?),
+            Literal::Atomic(atomic) => {
+                syntax::Fof::Atom(self.fof_atomic_formula(&[], free, atomic)?)
+            }
             Literal::NegatedAtomic(atomic) => syntax::Fof::Not(Box::new(syntax::Fof::Atom(
-                self.fof_atomic_formula(atomic)?,
+                self.fof_atomic_formula(&[], free, atomic)?,
             ))),
-            Literal::Infix(infix) => self.fof_infix_unary(infix)?,
+            Literal::Infix(infix) => self.fof_infix_unary(&[], free, infix)?,
         })
     }
 
@@ -371,13 +442,18 @@ impl Loader {
             cnf::Formula::Disjunction(d) => d,
             cnf::Formula::Parenthesised(d) => d,
         };
-        Ok(syntax::Fof::Or(
+        let mut free = vec![];
+        let mut formula = syntax::Fof::Or(
             disjunction
                 .0
                 .into_iter()
-                .map(|lit| self.literal(lit))
+                .map(|lit| self.literal(&mut free, lit))
                 .collect::<anyhow::Result<_>>()?,
-        ))
+        );
+        while let Some((_, free)) = free.pop() {
+            formula = syntax::Fof::Forall(free, Box::new(formula));
+        }
+        Ok(formula)
     }
 
     fn annotated<D: Dialect>(
@@ -403,12 +479,7 @@ impl Loader {
         let info = syntax::Info { source, is_goal };
 
         let mut formula = annotated.formula.load(self)?;
-        while let Some((_, free)) = self.free.pop() {
-            formula = syntax::Fof::Forall(free, Box::new(formula));
-        }
         self.fresh_variable = 0;
-        assert!(self.bound.is_empty());
-        assert!(self.free.is_empty());
         if negate {
             formula = syntax::Fof::Not(Box::new(formula));
         }

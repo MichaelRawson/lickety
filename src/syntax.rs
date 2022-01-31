@@ -1,4 +1,4 @@
-use crate::util::*;
+use crate::util::{Renaming, VarSet};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -81,10 +81,43 @@ impl Hash for Symbol {
     }
 }
 
-#[derive(Clone, Debug, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialOrd, Ord)]
+pub(crate) struct SymbolRef {
+    pub(crate) symbol: &'static Symbol,
+}
+
+impl SymbolRef {
+    pub(crate) fn new(symbol: Symbol) -> Self {
+        Self {
+            symbol: Box::leak(Box::new(symbol)),
+        }
+    }
+}
+
+impl fmt::Display for SymbolRef {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        self.symbol.fmt(fmt)
+    }
+}
+
+impl PartialEq for SymbolRef {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self.symbol as *const Symbol, other.symbol as *const Symbol)
+    }
+}
+
+impl Eq for SymbolRef {}
+
+impl Hash for SymbolRef {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.symbol.hash(state);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum FofTerm {
     Variable(usize),
-    Function(Rc<Symbol>, Vec<FofTerm>),
+    Function(SymbolRef, Vec<FofTerm>),
 }
 
 impl FofTerm {
@@ -116,18 +149,6 @@ impl FofTerm {
         }
     }
 }
-
-impl PartialEq for FofTerm {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Variable(x), Self::Variable(y)) => x == y,
-            (Self::Function(f, ss), Self::Function(g, ts)) => Rc::ptr_eq(f, g) && ss.iter().eq(ts),
-            _ => false,
-        }
-    }
-}
-
-impl Eq for FofTerm {}
 
 #[derive(Clone, Debug)]
 pub(crate) enum FofAtomic {
@@ -229,10 +250,10 @@ pub(crate) struct Info {
     pub(crate) source: Source,
 }
 
-#[derive(Clone, Debug, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Flat {
     Variable(usize),
-    Symbol(Rc<Symbol>, usize),
+    Symbol(SymbolRef, usize),
 }
 
 impl Flat {
@@ -240,32 +261,6 @@ impl Flat {
         match self {
             Self::Variable(_) => 1,
             Self::Symbol(_, jump) => *jump,
-        }
-    }
-}
-
-impl PartialEq for Flat {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Variable(x), Self::Variable(y)) => x == y,
-            (Self::Symbol(f, _), Self::Symbol(g, _)) => Rc::ptr_eq(f, g),
-            _ => false,
-        }
-    }
-}
-
-impl Eq for Flat {}
-
-impl Hash for Flat {
-    fn hash<H: Hasher>(&self, hasher: &mut H) {
-        std::mem::discriminant(self).hash(hasher);
-        match self {
-            Self::Variable(x) => {
-                x.hash(hasher);
-            }
-            Self::Symbol(f, _) => {
-                std::ptr::hash::<Symbol, H>(&**f, hasher);
-            }
         }
     }
 }
@@ -284,10 +279,10 @@ impl<'a> FlatSlice<'a> {
         })
     }
 
-    fn symbols(self) -> impl Iterator<Item = &'a Rc<Symbol>> {
+    fn symbols(self) -> impl Iterator<Item = SymbolRef> + 'a {
         self.0.iter().filter_map(|flat| {
             if let Flat::Symbol(f, _) = flat {
-                Some(f)
+                Some(*f)
             } else {
                 None
             }
@@ -299,12 +294,12 @@ impl<'a> FlatSlice<'a> {
     }
 
     fn as_equation(self) -> Option<(&'a [Flat], &'a [Flat])> {
-        let f = if let Flat::Symbol(f, _) = &self.0[0] {
+        let f = if let Flat::Symbol(f, _) = self.0[0] {
             f
         } else {
             return None;
         };
-        if !f.is_equality() {
+        if !f.symbol.is_equality() {
             return None;
         }
         let args = &self.0[1..];
@@ -315,8 +310,8 @@ impl<'a> FlatSlice<'a> {
     }
 
     pub(crate) fn args(self) -> impl Iterator<Item = FlatSlice<'a>> {
-        let arity = match &self.0[0] {
-            Flat::Symbol(f, _) => f.arity,
+        let arity = match self.0[0] {
+            Flat::Symbol(f, _) => f.symbol.arity,
             _ => unreachable!(),
         };
         let mut index = 1;
@@ -336,8 +331,8 @@ impl<'a> FlatSlice<'a> {
         self.0.len()
     }
 
-    pub(crate) fn head(self) -> &'a Flat {
-        &self.0[0]
+    pub(crate) fn head(self) -> Flat {
+        self.0[0]
     }
 
     pub(crate) fn tail(self) -> Self {
@@ -355,7 +350,7 @@ impl<'a> FlatSlice<'a> {
     pub(crate) fn might_unify(mut left: Self, mut right: Self) -> bool {
         while !left.is_empty() && !right.is_empty() {
             if let (Flat::Symbol(f, _), Flat::Symbol(g, _)) = (left.head(), right.head()) {
-                if !Rc::ptr_eq(f, g) {
+                if f != g {
                     return false;
                 }
                 left = left.tail();
@@ -383,11 +378,11 @@ impl<'a> fmt::Display for FlatSlice<'a> {
         match self.head() {
             Flat::Variable(x) => write!(fmt, "X{}", x),
             Flat::Symbol(f, _) => {
-                f.fmt(fmt)?;
-                if f.arity > 0 {
+                f.symbol.fmt(fmt)?;
+                if f.symbol.arity > 0 {
                     write!(fmt, "(")?;
                     let mut term = self.tail();
-                    for i in 0..f.arity {
+                    for i in 0..f.symbol.arity {
                         if i > 0 {
                             write!(fmt, ",")?;
                         }
@@ -455,7 +450,7 @@ pub(crate) struct Literal {
 }
 
 impl Literal {
-    pub(crate) fn symbols(&self) -> impl Iterator<Item = &Rc<Symbol>> {
+    pub(crate) fn symbols(&self) -> impl Iterator<Item = SymbolRef> + '_ {
         self.atom.as_slice().symbols()
     }
 
@@ -510,7 +505,7 @@ pub(crate) struct Split {
 }
 
 impl Split {
-    pub(crate) fn symbols(&self) -> impl Iterator<Item = &Rc<Symbol>> {
+    pub(crate) fn symbols(&self) -> impl Iterator<Item = SymbolRef> + '_ {
         self.literals.iter().flat_map(|literal| literal.symbols())
     }
 
@@ -575,7 +570,7 @@ pub(crate) struct Clause {
 }
 
 impl Clause {
-    pub(crate) fn symbols(&self) -> impl Iterator<Item = &Rc<Symbol>> {
+    pub(crate) fn symbols(&self) -> impl Iterator<Item = SymbolRef> + '_ {
         self.splits.iter().flat_map(|split| split.symbols())
     }
 }
