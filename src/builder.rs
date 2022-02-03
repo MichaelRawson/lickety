@@ -1,7 +1,6 @@
 use crate::splitter::Splitter;
 use crate::syntax::*;
 use fnv::FnvHashSet;
-use std::rc::Rc;
 
 #[derive(Default)]
 pub(crate) struct Builder {
@@ -52,15 +51,12 @@ impl Builder {
         self.matrix.clauses.push((clause, info));
     }
 
-    fn process_equality_clause(&mut self, clause: Vec<NnfLiteral>, variables: usize) {
+    fn process_equality_clause(&mut self, clause: Vec<NnfLiteral>) {
         let literals = clause
             .into_iter()
             .map(|literal| self.build_literal(&literal))
             .collect::<Vec<_>>();
-        let split = Rc::new(Split {
-            literals,
-            variables,
-        });
+        let split = Split::from_literals(literals);
         let splits = vec![split];
         let clause = Clause { splits };
         let info = Info {
@@ -74,43 +70,34 @@ impl Builder {
         let x0 = FofTerm::Variable(0);
         let x1 = FofTerm::Variable(1);
         let x2 = FofTerm::Variable(2);
-        self.process_equality_clause(
-            vec![NnfLiteral {
+        self.process_equality_clause(vec![NnfLiteral {
+            polarity: true,
+            atom: FofTerm::Function(equality, vec![x0.clone(), x0.clone()]),
+        }]);
+        self.process_equality_clause(vec![
+            NnfLiteral {
+                polarity: false,
+                atom: FofTerm::Function(equality, vec![x0.clone(), x1.clone()]),
+            },
+            NnfLiteral {
                 polarity: true,
-                atom: FofTerm::Function(equality, vec![x0.clone(), x0.clone()]),
-            }],
-            1,
-        );
-        self.process_equality_clause(
-            vec![
-                NnfLiteral {
-                    polarity: false,
-                    atom: FofTerm::Function(equality, vec![x0.clone(), x1.clone()]),
-                },
-                NnfLiteral {
-                    polarity: true,
-                    atom: FofTerm::Function(equality, vec![x1.clone(), x0.clone()]),
-                },
-            ],
-            2,
-        );
-        self.process_equality_clause(
-            vec![
-                NnfLiteral {
-                    polarity: false,
-                    atom: FofTerm::Function(equality, vec![x0.clone(), x1.clone()]),
-                },
-                NnfLiteral {
-                    polarity: false,
-                    atom: FofTerm::Function(equality, vec![x1.clone(), x2.clone()]),
-                },
-                NnfLiteral {
-                    polarity: true,
-                    atom: FofTerm::Function(equality, vec![x0.clone(), x2.clone()]),
-                },
-            ],
-            3,
-        );
+                atom: FofTerm::Function(equality, vec![x1.clone(), x0.clone()]),
+            },
+        ]);
+        self.process_equality_clause(vec![
+            NnfLiteral {
+                polarity: false,
+                atom: FofTerm::Function(equality, vec![x0.clone(), x1.clone()]),
+            },
+            NnfLiteral {
+                polarity: false,
+                atom: FofTerm::Function(equality, vec![x1.clone(), x2.clone()]),
+            },
+            NnfLiteral {
+                polarity: true,
+                atom: FofTerm::Function(equality, vec![x0.clone(), x2.clone()]),
+            },
+        ]);
 
         let mut vars = vec![x0, x1, x2];
         let mut symbols = self.congruence_symbols.drain().collect::<Vec<_>>();
@@ -155,7 +142,7 @@ impl Builder {
                     ),
                 })
             }
-            self.process_equality_clause(literals, 2 * arity);
+            self.process_equality_clause(literals);
         }
     }
 

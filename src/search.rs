@@ -52,12 +52,12 @@ impl<'matrix> Search<'matrix> {
             || goal.weight() > HARD_WEIGHT_LIMIT
             || goal.literals.len() > HARD_LITERAL_LIMIT
             || goal.is_tautology()
-            || path.iter().any(|split| split == goal)
+            || path.iter().any(|split| split.hash == goal.hash)
         {
             return false;
         }
 
-        //println!("{}", goal);
+        //println!("{}", goal.hash);
         let goal_literal = goal.literals.last().expect("no goal literal");
 
         // factoring

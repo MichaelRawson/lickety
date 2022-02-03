@@ -286,6 +286,20 @@ impl Flat {
             None
         }
     }
+
+    fn b3hash(&self, hasher: &mut blake3::Hasher) {
+        match self {
+            Flat::Variable(x) => {
+                hasher.update(&[0]);
+                hasher.update(&x.to_le_bytes());
+            }
+            Flat::Symbol(f, _) => {
+                let f = f.symbol.number;
+                hasher.update(&[1]);
+                hasher.update(&f.to_le_bytes());
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -322,6 +336,12 @@ impl<'a> FlatSlice<'a> {
         let left = &args[..jump];
         let right = &args[jump..];
         Some((left, right))
+    }
+
+    fn b3hash(self, hasher: &mut blake3::Hasher) {
+        for flat in self.0 {
+            flat.b3hash(hasher);
+        }
     }
 
     pub(crate) fn args(self) -> impl Iterator<Item = FlatSlice<'a>> {
@@ -489,6 +509,11 @@ impl Literal {
         self.atom.rename(renaming);
     }
 
+    pub(crate) fn b3hash(&self, hasher: &mut blake3::Hasher) {
+        hasher.update(&[self.polarity as u8]);
+        self.atom.as_slice().b3hash(hasher);
+    }
+
     pub(crate) fn offset(&mut self, by: usize) {
         if by == 0 {
             return;
@@ -517,10 +542,11 @@ impl fmt::Display for Literal {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug)]
 pub(crate) struct Split {
     pub(crate) literals: Vec<Literal>,
     pub(crate) variables: usize,
+    pub(crate) hash: blake3::Hash,
 }
 
 impl Split {
@@ -531,9 +557,14 @@ impl Split {
         for literal in &mut literals {
             literal.rename(&mut renaming);
         }
+        let mut hasher = blake3::Hasher::new();
+        for literal in &literals {
+            literal.b3hash(&mut hasher);
+        }
         Rc::new(Self {
             literals,
             variables: renaming.len(),
+            hash: hasher.finalize(),
         })
     }
 
