@@ -73,6 +73,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "discrimination-tree"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1cda430ec1a65cf5cc7fe8e8d02e848e9f4359f9527d40d0a9eafa9670de6d2"
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -127,6 +133,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "discrimination-tree",
  "fnv",
  "tptp",
 ]

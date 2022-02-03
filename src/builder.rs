@@ -1,6 +1,5 @@
 use crate::splitter::Splitter;
 use crate::syntax::*;
-use crate::util::Renaming;
 use fnv::FnvHashSet;
 use std::rc::Rc;
 
@@ -8,7 +7,6 @@ use std::rc::Rc;
 pub(crate) struct Builder {
     matrix: Matrix,
     splitter: Splitter,
-    rename: Renaming,
     equality: Option<SymbolRef>,
     congruence_symbols: FnvHashSet<SymbolRef>,
 }
@@ -37,42 +35,24 @@ impl Builder {
         Literal { polarity, atom }
     }
 
-    pub(crate) fn process_clause(&mut self, clause: Vec<NnfLiteral>, info: Info) {
-        let literals = clause
-            .into_iter()
-            .map(|literal| self.build_literal(&literal))
-            .collect::<Vec<_>>();
-        let variables = literals
-            .iter()
-            .map(|lit| lit.variable_limit())
-            .max()
-            .unwrap_or_default();
-        let mut splits = self.splitter.split(literals, variables);
-        for split in &mut splits {
-            split.normalise(&mut self.rename);
-        }
-        let splits = splits.into_iter().map(Rc::new).collect();
-
-        let index = self.matrix.clauses.len();
-        if info.is_goal {
-            self.matrix.goal_clauses.push(index);
-        }
-
-        let clause = Clause { splits };
-        for sref in clause.symbols() {
-            if sref.symbol.is_equality() {
-                if self.equality.is_none() {
-                    self.equality = Some(sref)
-                }
-            } else if sref.symbol.arity > 0 {
-                self.congruence_symbols.insert(sref);
+    fn insert_clause(&mut self, clause: Clause, info: Info) {
+        let clause_index = self.matrix.clauses.len();
+        for (split_index, split) in clause.splits.iter().enumerate() {
+            for (literal_index, literal) in split.literals.iter().enumerate() {
+                let location = Location {
+                    clause: clause_index,
+                    split: split_index,
+                    literal: literal_index,
+                };
+                self.matrix.index[literal.polarity as usize]
+                    .get_or_insert_with(literal.index_key(), Vec::new)
+                    .push(location);
             }
         }
-
         self.matrix.clauses.push((clause, info));
     }
 
-    fn insert_equality_clause(&mut self, clause: Vec<NnfLiteral>, variables: usize) {
+    fn process_equality_clause(&mut self, clause: Vec<NnfLiteral>, variables: usize) {
         let literals = clause
             .into_iter()
             .map(|literal| self.build_literal(&literal))
@@ -87,21 +67,21 @@ impl Builder {
             source: Source::Equality,
             is_goal: false,
         };
-        self.matrix.clauses.push((clause, info));
+        self.insert_clause(clause, info);
     }
 
     fn add_equality_axioms(&mut self, equality: SymbolRef) {
         let x0 = FofTerm::Variable(0);
         let x1 = FofTerm::Variable(1);
         let x2 = FofTerm::Variable(2);
-        self.insert_equality_clause(
+        self.process_equality_clause(
             vec![NnfLiteral {
                 polarity: true,
                 atom: FofTerm::Function(equality, vec![x0.clone(), x0.clone()]),
             }],
             1,
         );
-        self.insert_equality_clause(
+        self.process_equality_clause(
             vec![
                 NnfLiteral {
                     polarity: false,
@@ -114,7 +94,7 @@ impl Builder {
             ],
             2,
         );
-        self.insert_equality_clause(
+        self.process_equality_clause(
             vec![
                 NnfLiteral {
                     polarity: false,
@@ -175,8 +155,39 @@ impl Builder {
                     ),
                 })
             }
-            self.insert_equality_clause(literals, 2 * arity);
+            self.process_equality_clause(literals, 2 * arity);
         }
+    }
+
+    pub(crate) fn process_clause(&mut self, clause: Vec<NnfLiteral>, info: Info) {
+        let literals = clause
+            .into_iter()
+            .map(|literal| self.build_literal(&literal))
+            .collect::<Vec<_>>();
+        let variables = literals
+            .iter()
+            .map(Literal::variable_limit)
+            .max()
+            .unwrap_or_default();
+        let splits = self.splitter.split(literals, variables).collect();
+
+        let index = self.matrix.clauses.len();
+        if info.is_goal {
+            self.matrix.goal_clauses.push(index);
+        }
+
+        let clause = Clause { splits };
+        for sref in clause.symbols() {
+            if sref.symbol.is_equality() {
+                if self.equality.is_none() {
+                    self.equality = Some(sref)
+                }
+            } else if sref.symbol.arity > 0 {
+                self.congruence_symbols.insert(sref);
+            }
+        }
+
+        self.insert_clause(clause, info);
     }
 
     pub(crate) fn finish(mut self) -> Matrix {

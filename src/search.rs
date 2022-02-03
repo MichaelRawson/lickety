@@ -1,7 +1,7 @@
 use crate::splitter::Splitter;
 use crate::syntax::*;
 use crate::unify::Unifier;
-use crate::util::{Renaming, Stack};
+use crate::util::Stack;
 use std::rc::Rc;
 
 const HARD_LITERAL_LIMIT: usize = 100;
@@ -9,11 +9,13 @@ const HARD_WEIGHT_LIMIT: usize = 100;
 
 struct Search<'matrix> {
     matrix: &'matrix Matrix,
+    splitter: Splitter,
 }
 
 impl<'matrix> Search<'matrix> {
     fn new(matrix: &'matrix Matrix) -> Self {
-        Self { matrix }
+        let splitter = Splitter::default();
+        Self { matrix, splitter }
     }
 
     fn go(&mut self) -> bool {
@@ -83,9 +85,9 @@ impl<'matrix> Search<'matrix> {
                 .collect();
             let path = Stack::Cons(goal.clone(), path);
             if self
+                .splitter
                 .split(literals, goal.variables)
-                .iter()
-                .all(|split| self.prove(limit - 1, &path, split))
+                .all(|split| self.prove(limit - 1, &path, &split))
             {
                 return true;
             }
@@ -100,6 +102,7 @@ impl<'matrix> Search<'matrix> {
                 if !FlatSlice::might_unify(literal.atom.as_slice(), goal_literal.atom.as_slice()) {
                     continue;
                 }
+
                 let mut literal = literal.clone();
                 literal.offset(goal.variables);
                 let variables = goal.variables + split.variables;
@@ -133,9 +136,9 @@ impl<'matrix> Search<'matrix> {
                     .collect();
                 let path = Stack::Cons(goal.clone(), path);
                 if self
+                    .splitter
                     .split(literals, variables)
-                    .iter()
-                    .all(|split| self.prove(limit - 1, &path, split))
+                    .all(|split| self.prove(limit - 1, &path, &split))
                 {
                     return true;
                 }
@@ -143,80 +146,64 @@ impl<'matrix> Search<'matrix> {
         }
 
         // input resolution
-        for (clause, _) in self.matrix.clauses.iter() {
-            for (split_index, split) in clause.splits.iter().enumerate() {
-                for (literal_index, literal) in split.literals.iter().enumerate() {
-                    if literal.polarity == goal_literal.polarity {
-                        continue;
-                    }
-                    if !FlatSlice::might_unify(
-                        literal.atom.as_slice(),
-                        goal_literal.atom.as_slice(),
-                    ) {
-                        continue;
-                    }
-                    let mut literal = literal.clone();
-                    literal.offset(goal.variables);
-                    let variables = goal.variables + split.variables;
-                    let mut unifier = Unifier::new(variables);
-                    if !unifier.unify(literal.atom.as_slice(), goal_literal.atom.as_slice()) {
-                        continue;
-                    }
+        for location in self.matrix.index[!goal_literal.polarity as usize]
+            .query(goal_literal.index_key(), true, true)
+            .flatten()
+        {
+            let (clause, _) = &self.matrix.clauses[location.clause];
+            let split = &clause.splits[location.split];
+            let literal = &split.literals[location.literal];
 
-                    let literals = goal
+            let mut literal = literal.clone();
+            literal.offset(goal.variables);
+            let variables = goal.variables + split.variables;
+            let mut unifier = Unifier::new(variables);
+            if !unifier.unify(literal.atom.as_slice(), goal_literal.atom.as_slice()) {
+                continue;
+            }
+
+            let literals = goal
+                .literals
+                .iter()
+                .rev()
+                .skip(1)
+                .cloned()
+                .chain(
+                    split
                         .literals
                         .iter()
-                        .rev()
-                        .skip(1)
-                        .cloned()
-                        .chain(
-                            split
-                                .literals
-                                .iter()
-                                .enumerate()
-                                .filter(|(i, _)| *i != literal_index)
-                                .map(|(_, l)| {
-                                    let mut l = l.clone();
-                                    l.offset(goal.variables);
-                                    l
-                                }),
-                        )
-                        .map(|literal| Literal {
-                            polarity: literal.polarity,
-                            atom: unifier.apply(literal.atom.as_slice()),
-                        })
-                        .collect();
+                        .enumerate()
+                        .filter(|(i, _)| *i != location.literal)
+                        .map(|(_, l)| {
+                            let mut l = l.clone();
+                            l.offset(goal.variables);
+                            l
+                        }),
+                )
+                .map(|literal| Literal {
+                    polarity: literal.polarity,
+                    atom: unifier.apply(literal.atom.as_slice()),
+                })
+                .collect();
 
-                    let path = Stack::Cons(goal.clone(), path);
-                    if self
-                        .split(literals, variables)
-                        .iter()
-                        .all(|split| self.prove(limit - 1, &path, split))
-                        && clause
-                            .splits
-                            .iter()
-                            .enumerate()
-                            .filter(|(i, _)| *i != split_index)
-                            .map(|(_, l)| l)
-                            .all(|split| self.prove(limit - 1, &path, split))
-                    {
-                        return true;
-                    }
-                }
+            let path = Stack::Cons(goal.clone(), path);
+            if self
+                .splitter
+                .split(literals, variables)
+                .all(|split| self.prove(limit - 1, &path, &split))
+                && clause
+                    .splits
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != location.split)
+                    .map(|(_, l)| l)
+                    .all(|split| self.prove(limit - 1, &path, split))
+            {
+                return true;
             }
         }
 
         false
-    }
-
-    fn split(&mut self, literals: Vec<Literal>, variables: usize) -> Vec<Rc<Split>> {
-        let mut splitter = Splitter::default();
-        let mut splits = splitter.split(literals, variables);
-        let mut renaming = Renaming::default();
-        for split in &mut splits {
-            split.normalise(&mut renaming);
-        }
-        splits.into_iter().map(Rc::new).collect()
     }
 }
 

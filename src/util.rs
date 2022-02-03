@@ -6,10 +6,6 @@ impl Renaming {
         self.0.len()
     }
 
-    pub(crate) fn clear(&mut self) {
-        self.0.clear();
-    }
-
     pub(crate) fn rename(&mut self, x: usize) -> usize {
         self.0.iter().position(|y| x == *y).unwrap_or_else(|| {
             let index = self.0.len();

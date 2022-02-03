@@ -1,6 +1,6 @@
 use crate::syntax::*;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct Unifier<'a>(Vec<Option<FlatSlice<'a>>>);
 
 impl<'a> Unifier<'a> {

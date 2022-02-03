@@ -20,6 +20,8 @@ struct Options {
     path: PathBuf,
     #[clap(short, long, default_value_t = 10)]
     time: u64,
+    #[clap(long)]
+    dump_nf: bool,
 }
 
 impl Options {
@@ -50,6 +52,11 @@ fn main() -> anyhow::Result<()> {
     opts.launch_timeout_thread();
 
     let matrix = tptp::load(&opts.path)?;
+    if opts.dump_nf {
+        println!("{}", matrix);
+        exit(0);
+    }
+
     if search::go(&matrix) {
         println!("% SZS status Theorem for {}", opts.problem_name());
     }

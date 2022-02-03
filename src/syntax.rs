@@ -1,4 +1,5 @@
 use crate::util::{Renaming, VarSet};
+use discrimination_tree::DiscriminationTree;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -111,6 +112,12 @@ impl Eq for SymbolRef {}
 impl Hash for SymbolRef {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.symbol.hash(state);
+    }
+}
+
+impl discrimination_tree::Symbol for SymbolRef {
+    fn arity(&self) -> usize {
+        self.symbol.arity
     }
 }
 
@@ -257,10 +264,26 @@ pub(crate) enum Flat {
 }
 
 impl Flat {
-    fn jump(&self) -> usize {
+    fn jump(self) -> usize {
         match self {
             Self::Variable(_) => 1,
-            Self::Symbol(_, jump) => *jump,
+            Self::Symbol(_, jump) => jump,
+        }
+    }
+
+    fn variable(self) -> Option<usize> {
+        if let Self::Variable(x) = self {
+            Some(x)
+        } else {
+            None
+        }
+    }
+
+    fn symbol(self) -> Option<SymbolRef> {
+        if let Self::Symbol(f, _) = self {
+            Some(f)
+        } else {
+            None
         }
     }
 }
@@ -270,23 +293,15 @@ pub(crate) struct FlatSlice<'a>(&'a [Flat]);
 
 impl<'a> FlatSlice<'a> {
     fn variables(self) -> impl Iterator<Item = usize> + 'a {
-        self.0.iter().filter_map(|flat| {
-            if let Flat::Variable(x) = flat {
-                Some(*x)
-            } else {
-                None
-            }
-        })
+        self.0.iter().copied().filter_map(Flat::variable)
     }
 
     fn symbols(self) -> impl Iterator<Item = SymbolRef> + 'a {
-        self.0.iter().filter_map(|flat| {
-            if let Flat::Symbol(f, _) = flat {
-                Some(*f)
-            } else {
-                None
-            }
-        })
+        self.0.iter().copied().filter_map(Flat::symbol)
+    }
+
+    fn index_key(self) -> impl Iterator<Item = Option<SymbolRef>> + 'a {
+        self.0.iter().copied().map(Flat::symbol)
     }
 
     fn variable_limit(self) -> usize {
@@ -458,6 +473,10 @@ impl Literal {
         self.atom.as_slice().variables()
     }
 
+    pub(crate) fn index_key(&self) -> impl Iterator<Item = Option<SymbolRef>> + '_ {
+        self.atom.as_slice().index_key()
+    }
+
     pub(crate) fn variable_limit(&self) -> usize {
         self.atom.as_slice().variable_limit()
     }
@@ -505,6 +524,19 @@ pub(crate) struct Split {
 }
 
 impl Split {
+    pub(crate) fn from_literals(mut literals: Vec<Literal>) -> Rc<Self> {
+        literals.sort_unstable();
+        literals.dedup();
+        let mut renaming = Renaming::default();
+        for literal in &mut literals {
+            literal.rename(&mut renaming);
+        }
+        Rc::new(Self {
+            literals,
+            variables: renaming.len(),
+        })
+    }
+
     pub(crate) fn symbols(&self) -> impl Iterator<Item = SymbolRef> + '_ {
         self.literals.iter().flat_map(|literal| literal.symbols())
     }
@@ -526,16 +558,6 @@ impl Split {
             }
         }
         false
-    }
-
-    pub(crate) fn normalise(&mut self, renaming: &mut Renaming) {
-        self.literals.sort_unstable();
-        self.literals.dedup();
-        renaming.clear();
-        for literal in &mut self.literals {
-            literal.rename(renaming);
-        }
-        self.variables = renaming.len();
     }
 }
 
@@ -593,10 +615,18 @@ impl fmt::Display for Clause {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Location {
+    pub(crate) clause: usize,
+    pub(crate) split: usize,
+    pub(crate) literal: usize,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Matrix {
     pub(crate) clauses: Vec<(Clause, Info)>,
     pub(crate) goal_clauses: Vec<usize>,
+    pub(crate) index: [DiscriminationTree<SymbolRef, Vec<Location>>; 2],
 }
 
 impl fmt::Display for Matrix {
