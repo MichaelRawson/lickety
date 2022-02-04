@@ -8,7 +8,6 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1"
-blake3 = "1"
 discrimination-tree = "0.3"
 fnv = "1"
 tptp = "0.31"

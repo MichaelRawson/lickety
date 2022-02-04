@@ -3,7 +3,6 @@ use crate::splitter::Splitter;
 use crate::syntax::*;
 use crate::unify::Unifier;
 use crate::util::Stack;
-use std::rc::Rc;
 
 const HARD_LITERAL_LIMIT: usize = 100;
 const HARD_WEIGHT_LIMIT: usize = 100;
@@ -30,8 +29,7 @@ impl<'matrix> Search<'matrix> {
 
     fn go(&mut self) -> bool {
         for limit in 0.. {
-            if !self.solver.solve() {
-                //println!("unsat");
+            if self.solver.unsat() {
                 return true;
             }
             if self.start(limit) {
@@ -59,15 +57,15 @@ impl<'matrix> Search<'matrix> {
     fn prove<'a>(
         &mut self,
         limit: usize,
-        path: &'a Stack<'a, Rc<Split>>,
-        goal: &Rc<Split>,
+        path: &'a Stack<'a, &'a Split>,
+        goal: &Split,
         sat: SATLiteral,
     ) -> bool {
         if limit < goal.literals.len()
             || goal.weight() > HARD_WEIGHT_LIMIT
             || goal.literals.len() > HARD_LITERAL_LIMIT
             || goal.is_tautology()
-            || path.iter().any(|split| split == goal)
+            || path.iter().any(|split| *split == goal)
         {
             return false;
         }
@@ -87,18 +85,12 @@ impl<'matrix> Search<'matrix> {
                 continue;
             }
 
-            let literals = goal
-                .literals
-                .iter()
-                .rev()
-                .skip(1)
-                .map(|literal| Literal {
-                    polarity: literal.polarity,
-                    atom: unifier.apply(literal.atom.as_slice()),
-                })
-                .collect();
-            let path = Stack::Cons(goal.clone(), path);
-            let splits = self.splitter.split(literals, goal.variables);
+            let literals = goal.literals.iter().rev().skip(1).map(|literal| Literal {
+                polarity: literal.polarity,
+                atom: unifier.apply(literal.atom.as_slice()),
+            });
+            let path = Stack::Cons(goal, path);
+            let splits = self.splitter.split(literals);
             let mut deduction = vec![-sat];
 
             let mut success = true;
@@ -128,8 +120,7 @@ impl<'matrix> Search<'matrix> {
 
                 let mut literal = literal.clone();
                 literal.offset(goal.variables);
-                let variables = goal.variables + split.variables;
-                let mut unifier = Unifier::new(variables);
+                let mut unifier = Unifier::new(goal.variables + split.variables);
                 if !unifier.unify(literal.atom.as_slice(), goal_literal.atom.as_slice()) {
                     continue;
                 }
@@ -155,11 +146,9 @@ impl<'matrix> Search<'matrix> {
                     .map(|literal| Literal {
                         polarity: literal.polarity,
                         atom: unifier.apply(literal.atom.as_slice()),
-                    })
-                    .collect();
-
-                let path = Stack::Cons(goal.clone(), path);
-                let splits = self.splitter.split(literals, variables);
+                    });
+                let path = Stack::Cons(goal, path);
+                let splits = self.splitter.split(literals);
                 let mut success = true;
                 let mut deduction = vec![-sat, -self.solver.split(split)];
                 for split in splits {
@@ -189,8 +178,7 @@ impl<'matrix> Search<'matrix> {
 
             let mut literal = literal.clone();
             literal.offset(goal.variables);
-            let variables = goal.variables + split.variables;
-            let mut unifier = Unifier::new(variables);
+            let mut unifier = Unifier::new(goal.variables + split.variables);
             if !unifier.unify(literal.atom.as_slice(), goal_literal.atom.as_slice()) {
                 continue;
             }
@@ -216,13 +204,12 @@ impl<'matrix> Search<'matrix> {
                 .map(|literal| Literal {
                     polarity: literal.polarity,
                     atom: unifier.apply(literal.atom.as_slice()),
-                })
-                .collect();
+                });
 
-            let path = Stack::Cons(goal.clone(), path);
+            let path = Stack::Cons(goal, path);
             let mut success = true;
             let mut deduction = vec![-sat, -self.solver.split(split)];
-            for split in self.splitter.split(literals, variables) {
+            for split in self.splitter.split(literals) {
                 let sat = self.solver.split(&split);
                 self.solver.ground_split(&split, sat);
                 deduction.push(sat);

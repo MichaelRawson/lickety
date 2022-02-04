@@ -1,4 +1,5 @@
 mod builder;
+mod digest;
 mod nf;
 mod sat;
 mod search;

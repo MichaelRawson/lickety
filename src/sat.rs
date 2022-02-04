@@ -1,6 +1,6 @@
+use crate::digest::{Digest, DigestMap, DigestSet};
 use crate::syntax::*;
-use fnv::{FnvHashMap, FnvHashSet};
-use std::collections::hash_map::Entry;
+use fnv::FnvHashSet;
 use std::os::raw::c_int;
 
 const PICOSAT_UNSATISFIABLE: c_int = 20;
@@ -39,9 +39,9 @@ impl Cdcl {
         //println!("{:?}", clause);
     }
 
-    fn solve(&mut self) -> bool {
+    fn unsat(&mut self) -> bool {
         let result = unsafe { picosat_sat(self.0, -1) };
-        result != PICOSAT_UNSATISFIABLE
+        result == PICOSAT_UNSATISFIABLE
     }
 }
 
@@ -49,9 +49,9 @@ impl Cdcl {
 pub(crate) struct Solver {
     cdcl: Cdcl,
     fresh: SATLiteral,
-    atoms: FnvHashMap<blake3::Hash, SATLiteral>,
-    splits: FnvHashMap<blake3::Hash, SATLiteral>,
-    cache: FnvHashMap<Vec<SATLiteral>, ()>,
+    atoms: DigestMap<SATLiteral>,
+    splits: DigestMap<SATLiteral>,
+    cache: DigestSet,
     grounded: FnvHashSet<SATLiteral>,
 }
 
@@ -86,10 +86,12 @@ impl Solver {
     pub(crate) fn assert(&mut self, mut clause: Vec<SATLiteral>) {
         clause.sort_unstable();
         clause.dedup();
-        let entry = self.cache.entry(clause);
-        if matches!(entry, Entry::Vacant(_)) {
-            self.cdcl.assert(entry.key());
-            entry.or_default();
+        let mut digest = Digest::default();
+        for literal in &clause {
+            digest.update(*literal as u128);
+        }
+        if self.cache.insert(digest) {
+            self.cdcl.assert(&clause);
         }
     }
 
@@ -123,7 +125,7 @@ impl Solver {
         self.assert(sat_clause);
     }
 
-    pub(crate) fn solve(&mut self) -> bool {
-        self.cdcl.solve()
+    pub(crate) fn unsat(&mut self) -> bool {
+        self.cdcl.unsat()
     }
 }

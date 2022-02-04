@@ -1,3 +1,4 @@
+use crate::digest::Digest;
 use crate::util::{Renaming, VarSet};
 use discrimination_tree::DiscriminationTree;
 use std::fmt;
@@ -287,28 +288,27 @@ impl Flat {
         }
     }
 
-    fn hash_nonground(self, hasher: &mut blake3::Hasher) {
+    fn hash_nonground(self, digest: &mut Digest) {
         match self {
             Flat::Variable(x) => {
-                let code = x as isize;
-                hasher.update(&code.to_le_bytes());
+                let code = x as u128;
+                digest.update(code);
             }
             Flat::Symbol(f, _) => {
-                let code = -(f.symbol.number as isize);
-                hasher.update(&code.to_le_bytes());
+                let code = -(f.symbol.number as isize) as u128;
+                digest.update(code);
             }
         }
     }
 
-    fn hash_grounded(self, hasher: &mut blake3::Hasher) {
+    fn hash_grounded(self, digest: &mut Digest) {
         match self {
             Flat::Variable(_) => {
-                let code = 0usize;
-                hasher.update(&code.to_le_bytes());
+                digest.update(0);
             }
             Flat::Symbol(f, _) => {
-                let code = f.symbol.number;
-                hasher.update(&code.to_le_bytes());
+                let code = f.symbol.number as u128;
+                digest.update(code);
             }
         }
     }
@@ -330,10 +330,6 @@ impl<'a> FlatSlice<'a> {
         self.0.iter().copied().map(Flat::symbol)
     }
 
-    fn variable_limit(self) -> usize {
-        self.variables().max().map(|n| n + 1).unwrap_or_default()
-    }
-
     fn as_equation(self) -> Option<(&'a [Flat], &'a [Flat])> {
         let f = if let Flat::Symbol(f, _) = self.0[0] {
             f
@@ -350,18 +346,18 @@ impl<'a> FlatSlice<'a> {
         Some((left, right))
     }
 
-    fn hash_nonground(self, hasher: &mut blake3::Hasher) {
+    fn hash_nonground(self, digest: &mut Digest) {
         for flat in self.0 {
-            flat.hash_nonground(hasher);
+            flat.hash_nonground(digest);
         }
     }
 
-    pub(crate) fn hash_grounded(self) -> blake3::Hash {
-        let mut hasher = blake3::Hasher::default();
+    pub(crate) fn hash_grounded(self) -> Digest {
+        let mut digest = Digest::default();
         for flat in self.0 {
-            flat.hash_grounded(&mut hasher);
+            flat.hash_grounded(&mut digest);
         }
-        hasher.finalize()
+        digest
     }
 
     pub(crate) fn args(self) -> impl Iterator<Item = FlatSlice<'a>> {
@@ -517,10 +513,6 @@ impl Literal {
         self.atom.as_slice().index_key()
     }
 
-    pub(crate) fn variable_limit(&self) -> usize {
-        self.atom.as_slice().variable_limit()
-    }
-
     pub(crate) fn weight(&self) -> usize {
         self.atom.as_slice().len()
     }
@@ -529,9 +521,9 @@ impl Literal {
         self.atom.rename(renaming);
     }
 
-    fn hash_nonground(&self, hasher: &mut blake3::Hasher) {
-        hasher.update(&[self.polarity as u8]);
-        self.atom.as_slice().hash_nonground(hasher);
+    fn hash_nonground(&self, digest: &mut Digest) {
+        digest.update(self.polarity as u128);
+        self.atom.as_slice().hash_nonground(digest);
     }
 
     pub(crate) fn offset(&mut self, by: usize) {
@@ -569,17 +561,17 @@ pub(crate) struct Split {
 }
 
 impl Split {
-    pub(crate) fn from_literals(mut literals: Vec<Literal>) -> Rc<Self> {
+    pub(crate) fn from_literals(mut literals: Vec<Literal>) -> Self {
         literals.sort_unstable();
         literals.dedup();
         let mut renaming = Renaming::default();
         for literal in &mut literals {
             literal.rename(&mut renaming);
         }
-        Rc::new(Self {
+        Self {
             variables: renaming.len(),
             literals,
-        })
+        }
     }
 
     pub(crate) fn symbols(&self) -> impl Iterator<Item = SymbolRef> + '_ {
@@ -605,12 +597,12 @@ impl Split {
         false
     }
 
-    pub(crate) fn hash_nonground(&self) -> blake3::Hash {
-        let mut hasher = blake3::Hasher::default();
+    pub(crate) fn hash_nonground(&self) -> Digest {
+        let mut digest = Digest::default();
         for literal in &self.literals {
-            literal.hash_nonground(&mut hasher);
+            literal.hash_nonground(&mut digest);
         }
-        hasher.finalize()
+        digest
     }
 }
 
@@ -641,7 +633,7 @@ impl fmt::Display for Split {
 
 #[derive(Debug)]
 pub(crate) struct Clause {
-    pub(crate) splits: Vec<Rc<Split>>,
+    pub(crate) splits: Vec<Split>,
 }
 
 impl Clause {

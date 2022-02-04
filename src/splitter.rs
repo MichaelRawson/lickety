@@ -1,68 +1,83 @@
 use crate::syntax::*;
 use crate::util::VarSet;
-use std::rc::Rc;
+
+#[derive(Default)]
+struct UnionFind {
+    parent: Vec<usize>,
+}
+
+impl UnionFind {
+    fn clear(&mut self) {
+        self.parent.clear();
+    }
+
+    fn singleton(&mut self) -> usize {
+        let new = self.parent.len();
+        self.parent.push(new);
+        new
+    }
+
+    fn root(&mut self, start: usize) -> usize {
+        let mut node = start;
+        while self.parent[node] != node {
+            node = self.parent[node];
+        }
+        self.parent[start] = node;
+        node
+    }
+
+    fn merge(&mut self, left: usize, right: usize) -> usize {
+        self.parent[right] = left;
+        left
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct Splitter {
-    first_occurrence: Vec<usize>,
-    parent: Vec<usize>,
+    first_occurs: Vec<usize>,
+    uf: UnionFind,
     variables: VarSet,
-    splits: Vec<Vec<Literal>>
+    literals: Vec<Literal>,
+    splits: Vec<Vec<Literal>>,
 }
 
 impl Splitter {
-    fn root(&self, mut index: usize) -> usize {
-        while self.parent[index] != index {
-            index = self.parent[index];
-        }
-        index
-    }
+    pub(crate) fn split<I: IntoIterator<Item = Literal>>(&mut self, literals: I) -> Vec<Split> {
+        for literal in literals {
+            let mut root = self.uf.singleton();
 
-    pub(crate) fn split(&mut self, literals: Vec<Literal>, variables: usize) -> Vec<Rc<Split>> {
-        if literals.is_empty() {
-            return vec![];
-        } else if literals.len() == 1 {
-            return vec![Split::from_literals(literals)];
-        } else if variables == 0 {
-            return literals
-                .into_iter()
-                .map(|literal| {
-                    Rc::new(Split {
-                        variables: 0,
-                        literals: vec![literal],
-                    })
-                })
-                .collect();
-        }
-
-        self.first_occurrence.resize(variables, usize::MAX);
-
-        for (index, literal) in literals.iter().enumerate() {
-            self.parent.push(index);
             self.variables.extend(literal.variables());
+            while self.variables.len() > self.first_occurs.len() {
+                self.first_occurs.push(usize::MAX);
+            }
             for x in self.variables.members() {
-                let first_occurrence = self.first_occurrence[x];
-                if first_occurrence < index {
-                    let left = self.root(first_occurrence);
-                    let right = self.root(index);
-                    self.parent[right] = left;
+                let occurs = self.first_occurs[x];
+                if occurs != usize::MAX {
+                    let other = self.uf.root(occurs);
+                    root = self.uf.merge(other, root);
                 } else {
-                    self.first_occurrence[x] = index;
+                    self.first_occurs[x] = root;
                 }
             }
+            self.literals.push(literal);
             self.variables.clear();
         }
 
-        self.splits.resize_with(self.parent.len(), Default::default);
-        for (index, literal) in literals.into_iter().enumerate() {
-            let root = self.root(index);
+        for (index, literal) in self.literals.drain(..).enumerate() {
+            let root = self.uf.root(index);
+            while root >= self.splits.len() {
+                self.splits.push(vec![]);
+            }
             self.splits[root].push(literal);
         }
-        self.splits.retain(|split| !split.is_empty());
 
-        self.first_occurrence.clear();
-        self.parent.clear();
+        self.first_occurs.clear();
+        self.uf.clear();
 
-        self.splits.drain(..).map(Split::from_literals).collect()
+        self.splits
+            .drain(..)
+            .filter(|split| !split.is_empty())
+            .map(Split::from_literals)
+            .collect()
     }
 }

@@ -10,30 +10,30 @@ pub(crate) struct Builder {
     congruence_symbols: FnvHashSet<SymbolRef>,
 }
 
-impl Builder {
-    fn build_term(&mut self, out: &mut FlatVec, term: &FofTerm) {
-        match term {
-            FofTerm::Variable(x) => {
-                out.push(Flat::Variable(*x));
+fn build_term(out: &mut FlatVec, term: &FofTerm) {
+    match term {
+        FofTerm::Variable(x) => {
+            out.push(Flat::Variable(*x));
+        }
+        FofTerm::Function(f, ts) => {
+            let index = out.as_slice().len();
+            out.push(Flat::Symbol(*f, 0));
+            for t in ts {
+                build_term(out, t);
             }
-            FofTerm::Function(f, ts) => {
-                let index = out.as_slice().len();
-                out.push(Flat::Symbol(*f, 0));
-                for t in ts {
-                    self.build_term(out, t);
-                }
-                out.set_jump(index);
-            }
+            out.set_jump(index);
         }
     }
+}
 
-    fn build_literal(&mut self, literal: &NnfLiteral) -> Literal {
-        let polarity = literal.polarity;
-        let mut atom = FlatVec::default();
-        self.build_term(&mut atom, &literal.atom);
-        Literal { polarity, atom }
-    }
+fn build_literal(literal: &NnfLiteral) -> Literal {
+    let polarity = literal.polarity;
+    let mut atom = FlatVec::default();
+    build_term(&mut atom, &literal.atom);
+    Literal { polarity, atom }
+}
 
+impl Builder {
     fn insert_clause(&mut self, clause: Clause, info: Info) {
         let clause_index = self.matrix.clauses.len();
         for (split_index, split) in clause.splits.iter().enumerate() {
@@ -54,8 +54,8 @@ impl Builder {
     fn process_equality_clause(&mut self, clause: Vec<NnfLiteral>) {
         let literals = clause
             .into_iter()
-            .map(|literal| self.build_literal(&literal))
-            .collect::<Vec<_>>();
+            .map(|literal| build_literal(&literal))
+            .collect();
         let split = Split::from_literals(literals);
         let splits = vec![split];
         let clause = Clause { splits };
@@ -147,16 +147,8 @@ impl Builder {
     }
 
     pub(crate) fn process_clause(&mut self, clause: Vec<NnfLiteral>, info: Info) {
-        let literals = clause
-            .into_iter()
-            .map(|literal| self.build_literal(&literal))
-            .collect::<Vec<_>>();
-        let variables = literals
-            .iter()
-            .map(Literal::variable_limit)
-            .max()
-            .unwrap_or_default();
-        let splits = self.splitter.split(literals, variables);
+        let literals = clause.into_iter().map(|literal| build_literal(&literal));
+        let splits = self.splitter.split(literals);
 
         let index = self.matrix.clauses.len();
         if info.is_goal {

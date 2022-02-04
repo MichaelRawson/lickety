@@ -30,6 +30,10 @@ impl VarSet {
         self.0[x] = true;
     }
 
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
     pub(crate) fn remove(&mut self, x: usize) {
         if x >= self.0.len() {
             return;
