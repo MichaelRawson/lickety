@@ -7,6 +7,7 @@ pub(crate) struct Splitter {
     first_occurrence: Vec<usize>,
     parent: Vec<usize>,
     variables: VarSet,
+    splits: Vec<Vec<Literal>>
 }
 
 impl Splitter {
@@ -17,49 +18,51 @@ impl Splitter {
         index
     }
 
-    pub(crate) fn split(
-        &mut self,
-        literals: Vec<Literal>,
-        variables: usize,
-    ) -> impl Iterator<Item = Rc<Split>> {
-        let splits = if literals.is_empty() {
-            vec![]
+    pub(crate) fn split(&mut self, literals: Vec<Literal>, variables: usize) -> Vec<Rc<Split>> {
+        if literals.is_empty() {
+            return vec![];
         } else if literals.len() == 1 {
-            vec![literals]
+            return vec![Split::from_literals(literals)];
         } else if variables == 0 {
-            literals.into_iter().map(|literal| vec![literal]).collect()
-        } else {
-            self.first_occurrence.resize(variables, usize::MAX);
+            return literals
+                .into_iter()
+                .map(|literal| {
+                    Rc::new(Split {
+                        variables: 0,
+                        literals: vec![literal],
+                    })
+                })
+                .collect();
+        }
 
-            for (index, literal) in literals.iter().enumerate() {
-                self.parent.push(index);
-                self.variables.extend(literal.variables());
-                for x in self.variables.members() {
-                    let first_occurrence = self.first_occurrence[x];
-                    if first_occurrence < index {
-                        let left = self.root(first_occurrence);
-                        let right = self.root(index);
-                        self.parent[right] = left;
-                    } else {
-                        self.first_occurrence[x] = index;
-                    }
+        self.first_occurrence.resize(variables, usize::MAX);
+
+        for (index, literal) in literals.iter().enumerate() {
+            self.parent.push(index);
+            self.variables.extend(literal.variables());
+            for x in self.variables.members() {
+                let first_occurrence = self.first_occurrence[x];
+                if first_occurrence < index {
+                    let left = self.root(first_occurrence);
+                    let right = self.root(index);
+                    self.parent[right] = left;
+                } else {
+                    self.first_occurrence[x] = index;
                 }
-                self.variables.clear();
             }
+            self.variables.clear();
+        }
 
-            let mut splits = vec![vec![]; self.parent.len()];
-            for (index, literal) in literals.into_iter().enumerate() {
-                let root = self.root(index);
-                splits[root].push(literal);
-            }
-            splits.retain(|split| !split.is_empty());
+        self.splits.resize_with(self.parent.len(), Default::default);
+        for (index, literal) in literals.into_iter().enumerate() {
+            let root = self.root(index);
+            self.splits[root].push(literal);
+        }
+        self.splits.retain(|split| !split.is_empty());
 
-            self.first_occurrence.clear();
-            self.parent.clear();
+        self.first_occurrence.clear();
+        self.parent.clear();
 
-            splits
-        };
-
-        splits.into_iter().map(Split::from_literals)
+        self.splits.drain(..).map(Split::from_literals).collect()
     }
 }

@@ -1,3 +1,4 @@
+use crate::sat::{SATLiteral, Solver};
 use crate::splitter::Splitter;
 use crate::syntax::*;
 use crate::unify::Unifier;
@@ -10,16 +11,29 @@ const HARD_WEIGHT_LIMIT: usize = 100;
 struct Search<'matrix> {
     matrix: &'matrix Matrix,
     splitter: Splitter,
+    solver: Solver,
 }
 
 impl<'matrix> Search<'matrix> {
     fn new(matrix: &'matrix Matrix) -> Self {
         let splitter = Splitter::default();
-        Self { matrix, splitter }
+        let mut solver = Solver::default();
+        for (clause, _) in &matrix.clauses {
+            solver.assert_input_clause(clause);
+        }
+        Self {
+            matrix,
+            splitter,
+            solver,
+        }
     }
 
     fn go(&mut self) -> bool {
         for limit in 0.. {
+            if !self.solver.solve() {
+                //println!("unsat");
+                return true;
+            }
             if self.start(limit) {
                 return true;
             }
@@ -28,16 +42,16 @@ impl<'matrix> Search<'matrix> {
     }
 
     fn start(&mut self, limit: usize) -> bool {
-        for index in &self.matrix.goal_clauses {
+        'clauses: for index in &self.matrix.goal_clauses {
             let (clause, _) = &self.matrix.clauses[*index];
             let path = Stack::Nil;
-            if clause
-                .splits
-                .iter()
-                .all(|split| self.prove(limit, &path, split))
-            {
-                return true;
+            for split in &clause.splits {
+                let sat = self.solver.split(split);
+                if !self.prove(limit, &path, split, sat) {
+                    continue 'clauses;
+                }
             }
+            return true;
         }
         false
     }
@@ -47,17 +61,17 @@ impl<'matrix> Search<'matrix> {
         limit: usize,
         path: &'a Stack<'a, Rc<Split>>,
         goal: &Rc<Split>,
+        sat: SATLiteral,
     ) -> bool {
         if limit < goal.literals.len()
             || goal.weight() > HARD_WEIGHT_LIMIT
             || goal.literals.len() > HARD_LITERAL_LIMIT
             || goal.is_tautology()
-            || path.iter().any(|split| split.hash == goal.hash)
+            || path.iter().any(|split| split == goal)
         {
             return false;
         }
 
-        //println!("{}", goal.hash);
         let goal_literal = goal.literals.last().expect("no goal literal");
 
         // factoring
@@ -84,11 +98,20 @@ impl<'matrix> Search<'matrix> {
                 })
                 .collect();
             let path = Stack::Cons(goal.clone(), path);
-            if self
-                .splitter
-                .split(literals, goal.variables)
-                .all(|split| self.prove(limit - 1, &path, &split))
-            {
+            let splits = self.splitter.split(literals, goal.variables);
+            let mut deduction = vec![-sat];
+
+            let mut success = true;
+            for split in splits {
+                let sat = self.solver.split(&split);
+                self.solver.ground_split(&split, sat);
+                deduction.push(sat);
+                if success && !self.prove(limit - 1, &path, &split, sat) {
+                    success = false;
+                }
+            }
+            self.solver.assert(deduction);
+            if success {
                 return true;
             }
         }
@@ -134,12 +157,22 @@ impl<'matrix> Search<'matrix> {
                         atom: unifier.apply(literal.atom.as_slice()),
                     })
                     .collect();
+
                 let path = Stack::Cons(goal.clone(), path);
-                if self
-                    .splitter
-                    .split(literals, variables)
-                    .all(|split| self.prove(limit - 1, &path, &split))
-                {
+                let splits = self.splitter.split(literals, variables);
+                let mut success = true;
+                let mut deduction = vec![-sat, -self.solver.split(split)];
+                for split in splits {
+                    let sat = self.solver.split(&split);
+                    self.solver.ground_split(&split, sat);
+                    deduction.push(sat);
+                    let sat = self.solver.split(&split);
+                    if success && !self.prove(limit - 1, &path, &split, sat) {
+                        success = false;
+                    }
+                }
+                self.solver.assert(deduction);
+                if success {
                     return true;
                 }
             }
@@ -187,18 +220,28 @@ impl<'matrix> Search<'matrix> {
                 .collect();
 
             let path = Stack::Cons(goal.clone(), path);
-            if self
-                .splitter
-                .split(literals, variables)
-                .all(|split| self.prove(limit - 1, &path, &split))
-                && clause
-                    .splits
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| *i != location.split)
-                    .map(|(_, l)| l)
-                    .all(|split| self.prove(limit - 1, &path, split))
-            {
+            let mut success = true;
+            let mut deduction = vec![-sat, -self.solver.split(split)];
+            for split in self.splitter.split(literals, variables) {
+                let sat = self.solver.split(&split);
+                self.solver.ground_split(&split, sat);
+                deduction.push(sat);
+                if success && !self.prove(limit - 1, &path, &split, sat) {
+                    success = false;
+                }
+            }
+            self.solver.assert(deduction);
+            for other in &clause.splits {
+                if std::ptr::eq(other, split) {
+                    continue;
+                }
+                let sat = self.solver.split(other);
+                self.solver.ground_split(split, sat);
+                if success && !self.prove(limit - 1, &path, other, sat) {
+                    success = false;
+                }
+            }
+            if success {
                 return true;
             }
         }

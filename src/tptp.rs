@@ -558,7 +558,10 @@ impl Dialect for cnf::Formula<'_> {
 }
 
 pub(crate) fn load(path: &path::Path) -> anyhow::Result<syntax::Matrix> {
-    let mut loader = Loader::default();
+    let mut loader = Loader {
+        fresh_symbol: 1,
+        ..Default::default()
+    };
     loader
         .load(None, None, path)
         .with_context(|| format!("loading from '{}'...", path.display()))?;

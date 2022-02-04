@@ -1,5 +1,6 @@
 mod builder;
 mod nf;
+mod sat;
 mod search;
 mod splitter;
 mod syntax;
@@ -7,6 +8,7 @@ mod tptp;
 mod unify;
 mod util;
 
+use anyhow::Context;
 use clap::Parser;
 use std::io::{stdout, Write};
 use std::path::PathBuf;
@@ -40,7 +42,9 @@ impl Options {
             let stdout = stdout();
             let mut lock = stdout.lock();
             writeln!(lock, "% SZS status TimeOut for {}", name)
-                .expect("failed to print timeout message");
+                .map_err(anyhow::Error::new)
+                .context("printing timeout message")
+                .unwrap();
             std::mem::forget(lock);
             exit(1);
         });
@@ -59,6 +63,8 @@ fn main() -> anyhow::Result<()> {
 
     if search::go(&matrix) {
         println!("% SZS status Theorem for {}", opts.problem_name());
+        exit(0)
     }
+
     Ok(())
 }

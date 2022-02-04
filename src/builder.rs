@@ -156,7 +156,7 @@ impl Builder {
             .map(Literal::variable_limit)
             .max()
             .unwrap_or_default();
-        let splits = self.splitter.split(literals, variables).collect();
+        let splits = self.splitter.split(literals, variables);
 
         let index = self.matrix.clauses.len();
         if info.is_goal {

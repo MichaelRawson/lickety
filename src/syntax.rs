@@ -287,16 +287,28 @@ impl Flat {
         }
     }
 
-    fn b3hash(&self, hasher: &mut blake3::Hasher) {
+    fn hash_nonground(self, hasher: &mut blake3::Hasher) {
         match self {
             Flat::Variable(x) => {
-                hasher.update(&[0]);
-                hasher.update(&x.to_le_bytes());
+                let code = x as isize;
+                hasher.update(&code.to_le_bytes());
             }
             Flat::Symbol(f, _) => {
-                let f = f.symbol.number;
-                hasher.update(&[1]);
-                hasher.update(&f.to_le_bytes());
+                let code = -(f.symbol.number as isize);
+                hasher.update(&code.to_le_bytes());
+            }
+        }
+    }
+
+    fn hash_grounded(self, hasher: &mut blake3::Hasher) {
+        match self {
+            Flat::Variable(_) => {
+                let code = 0usize;
+                hasher.update(&code.to_le_bytes());
+            }
+            Flat::Symbol(f, _) => {
+                let code = f.symbol.number;
+                hasher.update(&code.to_le_bytes());
             }
         }
     }
@@ -338,10 +350,18 @@ impl<'a> FlatSlice<'a> {
         Some((left, right))
     }
 
-    fn b3hash(self, hasher: &mut blake3::Hasher) {
+    fn hash_nonground(self, hasher: &mut blake3::Hasher) {
         for flat in self.0 {
-            flat.b3hash(hasher);
+            flat.hash_nonground(hasher);
         }
+    }
+
+    pub(crate) fn hash_grounded(self) -> blake3::Hash {
+        let mut hasher = blake3::Hasher::default();
+        for flat in self.0 {
+            flat.hash_grounded(&mut hasher);
+        }
+        hasher.finalize()
     }
 
     pub(crate) fn args(self) -> impl Iterator<Item = FlatSlice<'a>> {
@@ -509,9 +529,9 @@ impl Literal {
         self.atom.rename(renaming);
     }
 
-    pub(crate) fn b3hash(&self, hasher: &mut blake3::Hasher) {
+    fn hash_nonground(&self, hasher: &mut blake3::Hasher) {
         hasher.update(&[self.polarity as u8]);
-        self.atom.as_slice().b3hash(hasher);
+        self.atom.as_slice().hash_nonground(hasher);
     }
 
     pub(crate) fn offset(&mut self, by: usize) {
@@ -542,11 +562,10 @@ impl fmt::Display for Literal {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Split {
-    pub(crate) literals: Vec<Literal>,
     pub(crate) variables: usize,
-    pub(crate) hash: blake3::Hash,
+    pub(crate) literals: Vec<Literal>,
 }
 
 impl Split {
@@ -557,14 +576,9 @@ impl Split {
         for literal in &mut literals {
             literal.rename(&mut renaming);
         }
-        let mut hasher = blake3::Hasher::new();
-        for literal in &literals {
-            literal.b3hash(&mut hasher);
-        }
         Rc::new(Self {
-            literals,
             variables: renaming.len(),
-            hash: hasher.finalize(),
+            literals,
         })
     }
 
@@ -589,6 +603,14 @@ impl Split {
             }
         }
         false
+    }
+
+    pub(crate) fn hash_nonground(&self) -> blake3::Hash {
+        let mut hasher = blake3::Hasher::default();
+        for literal in &self.literals {
+            literal.hash_nonground(&mut hasher);
+        }
+        hasher.finalize()
     }
 }
 
