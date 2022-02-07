@@ -16,8 +16,11 @@ impl Default for Digest {
 
 impl Digest {
     #[inline]
-    pub(crate) fn update(&mut self, value: u128) {
-        self.0 = (self.0 ^ value).wrapping_mul(FNV1A_PRIME);
+    pub(crate) fn update(&mut self, value: isize) {
+        for byte in value.to_ne_bytes() {
+            self.0 ^= byte as u128;
+            self.0 = self.0.wrapping_mul(FNV1A_PRIME);
+        }
     }
 }
 
@@ -30,7 +33,7 @@ impl Hasher for DigestHasher {
     }
 
     fn write(&mut self, _data: &[u8]) {
-        unreachable!("should only be used with 128-bit digest")
+        unreachable!("should only be used with Digest")
     }
 
     #[inline]

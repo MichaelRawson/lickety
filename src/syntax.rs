@@ -291,11 +291,11 @@ impl Flat {
     fn hash_nonground(self, digest: &mut Digest) {
         match self {
             Flat::Variable(x) => {
-                let code = x as u128;
+                let code = -(x as isize);
                 digest.update(code);
             }
             Flat::Symbol(f, _) => {
-                let code = -(f.symbol.number as isize) as u128;
+                let code = f.symbol.number as isize;
                 digest.update(code);
             }
         }
@@ -307,7 +307,7 @@ impl Flat {
                 digest.update(0);
             }
             Flat::Symbol(f, _) => {
-                let code = f.symbol.number as u128;
+                let code = f.symbol.number as isize;
                 digest.update(code);
             }
         }
@@ -522,7 +522,7 @@ impl Literal {
     }
 
     fn hash_nonground(&self, digest: &mut Digest) {
-        digest.update(self.polarity as u128);
+        digest.update(self.polarity as isize);
         self.atom.as_slice().hash_nonground(digest);
     }
 
