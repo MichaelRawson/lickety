@@ -107,11 +107,4 @@ impl DefaultRng {
     pub(crate) fn choose<'a, T>(&mut self, slice: &'a [T]) -> Option<&'a T> {
         slice.choose(&mut self.0)
     }
-
-    /*
-    #[inline]
-    pub(crate) fn shuffle<T>(&mut self, slice: &mut [T]) {
-        slice.shuffle(&mut self.0);
-    }
-    */
 }

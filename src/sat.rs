@@ -79,7 +79,7 @@ impl Assignment {
         self.0[index] = !self.0[index];
     }
 
-    fn value(&mut self, literal: SATLiteral) -> bool {
+    fn value(&self, literal: SATLiteral) -> bool {
         let polarity = literal > 0;
         let atom = literal.abs();
         self.0[atom as usize] == polarity
@@ -182,7 +182,6 @@ impl Sls {
             let unsatisfied = if let Some(unsatisfied) = self.choose_unsatisfied() {
                 unsatisfied
             } else {
-                //println!("sls");
                 return;
             };
             if let Some(index) = self.choose_flip(unsatisfied) {
@@ -199,7 +198,6 @@ impl Sls {
             self.unsat = true;
             return;
         }
-        //println!("cdcl");
 
         for literal in 1..self.fresh {
             let index = literal.abs() as usize;
@@ -237,7 +235,7 @@ impl Sls {
         self.solve();
     }
 
-    fn value(&mut self, literal: SATLiteral) -> bool {
+    fn value(&self, literal: SATLiteral) -> bool {
         self.assignment.value(literal)
     }
 }
@@ -261,7 +259,7 @@ impl Solver {
             .or_insert_with(|| sls.fresh())
     }
 
-    fn literal(&mut self, literal: &Literal) -> SATLiteral {
+    pub(crate) fn literal(&mut self, literal: &Literal) -> SATLiteral {
         let mut sat = self.atom(literal.atom.as_slice());
         if !literal.polarity {
             sat = -sat;
@@ -271,11 +269,10 @@ impl Solver {
 
     fn proper_split(&mut self, split: &Split) -> SATLiteral {
         let sls = &mut self.sls;
-        let lit = *self
+        *self
             .splits
             .entry(split.hash_nonground())
-            .or_insert_with(|| sls.fresh());
-        lit
+            .or_insert_with(|| sls.fresh())
     }
 
     pub(crate) fn assert(&mut self, mut clause: Vec<SATLiteral>) {
@@ -321,7 +318,7 @@ impl Solver {
         self.assert(sat_clause);
     }
 
-    pub(crate) fn value(&mut self, sat: SATLiteral) -> bool {
+    pub(crate) fn value(&self, sat: SATLiteral) -> bool {
         self.sls.value(sat)
     }
 
