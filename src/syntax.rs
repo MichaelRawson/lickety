@@ -288,6 +288,13 @@ impl Flat {
         }
     }
 
+    fn offset(self, offset: usize) -> Self {
+        match self {
+            Self::Variable(x) => Self::Variable(x + offset),
+            f => f,
+        }
+    }
+
     fn hash_nonground(self, digest: &mut Digest) {
         match self {
             Flat::Variable(x) => {
@@ -448,18 +455,65 @@ impl<'a> fmt::Display for FlatSlice<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Offset<'a> {
+    flat: FlatSlice<'a>,
+    offset: usize,
+}
+
+impl<'a> Offset<'a> {
+    pub(crate) fn new(flat: FlatSlice<'a>, offset: usize) -> Self {
+        Self { flat, offset }
+    }
+
+    pub(crate) fn is_empty(self) -> bool {
+        self.flat.is_empty()
+    }
+
+    pub(crate) fn head(self) -> Flat {
+        self.flat.head().offset(self.offset)
+    }
+
+    pub(crate) fn tail(self) -> Self {
+        Self {
+            flat: self.flat.tail(),
+            offset: self.offset,
+        }
+    }
+
+    pub(crate) fn next(self) -> Self {
+        Self {
+            flat: self.flat.next(),
+            offset: self.offset,
+        }
+    }
+
+    pub(crate) fn args(self) -> impl Iterator<Item = Offset<'a>> {
+        let offset = self.offset;
+        self.flat.args().map(move |flat| Self { flat, offset })
+    }
+
+    pub(crate) fn iter(self) -> impl Iterator<Item = Flat> + 'a {
+        let offset = self.offset;
+        self.flat
+            .0
+            .iter()
+            .copied()
+            .map(move |flat| flat.offset(offset))
+    }
+
+    pub(crate) fn trim_to_next(self) -> Self {
+        Self {
+            flat: self.flat.trim_to_next(),
+            offset: self.offset,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct FlatVec(Vec<Flat>);
 
 impl FlatVec {
-    fn offset(&mut self, by: usize) {
-        for mut flat in &mut self.0 {
-            if let Flat::Variable(x) = &mut flat {
-                *x += by;
-            }
-        }
-    }
-
     fn rename(&mut self, renaming: &mut Renaming) {
         for mut flat in &mut self.0 {
             if let Flat::Variable(x) = &mut flat {
@@ -494,10 +548,10 @@ impl fmt::Display for FlatVec {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Literal {
     pub(crate) polarity: bool,
-    pub(crate) atom: FlatVec,
+    pub(crate) atom: Rc<FlatVec>,
 }
 
 impl Literal {
@@ -517,20 +571,13 @@ impl Literal {
         self.atom.as_slice().len()
     }
 
-    fn rename(&mut self, renaming: &mut Renaming) {
-        self.atom.rename(renaming);
+    pub(crate) fn rename(&mut self, renaming: &mut Renaming) {
+        Rc::make_mut(&mut self.atom).rename(renaming);
     }
 
     fn hash_nonground(&self, digest: &mut Digest) {
         digest.update(self.polarity as isize);
         self.atom.as_slice().hash_nonground(digest);
-    }
-
-    pub(crate) fn offset(&mut self, by: usize) {
-        if by == 0 {
-            return;
-        }
-        self.atom.offset(by);
     }
 
     fn is_equational_tautology(&self) -> bool {
@@ -561,19 +608,6 @@ pub(crate) struct Split {
 }
 
 impl Split {
-    pub(crate) fn from_literals(mut literals: Vec<Literal>) -> Self {
-        literals.sort_unstable();
-        literals.dedup();
-        let mut renaming = Renaming::default();
-        for literal in &mut literals {
-            literal.rename(&mut renaming);
-        }
-        Self {
-            variables: renaming.len(),
-            literals,
-        }
-    }
-
     pub(crate) fn symbols(&self) -> impl Iterator<Item = SymbolRef> + '_ {
         self.literals.iter().flat_map(|literal| literal.symbols())
     }

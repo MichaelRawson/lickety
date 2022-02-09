@@ -2,7 +2,7 @@ use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(crate) struct Renaming(Vec<usize>);
 
 impl Renaming {
@@ -10,8 +10,21 @@ impl Renaming {
         self.0.len()
     }
 
+    pub(crate) fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    pub(crate) fn clone_from(&mut self, other: &Self) {
+        self.0.clear();
+        self.0.extend(&other.0);
+    }
+
+    pub(crate) fn try_rename(&self, x: usize) -> Option<usize> {
+        self.0.iter().position(|y| x == *y)
+    }
+
     pub(crate) fn rename(&mut self, x: usize) -> usize {
-        self.0.iter().position(|y| x == *y).unwrap_or_else(|| {
+        self.try_rename(x).unwrap_or_else(|| {
             let index = self.0.len();
             self.0.push(x);
             index
@@ -32,10 +45,6 @@ impl VarSet {
             self.0.resize(x + 1, false);
         }
         self.0[x] = true;
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.0.len()
     }
 
     pub(crate) fn remove(&mut self, x: usize) {

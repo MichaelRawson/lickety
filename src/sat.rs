@@ -38,7 +38,6 @@ impl Cdcl {
             unsafe { picosat_add(self.0, *literal) };
         }
         unsafe { picosat_add(self.0, 0) };
-        //println!("{:?}", clause);
     }
 
     fn forced(&self, literal: SATLiteral) -> bool {
@@ -215,7 +214,27 @@ impl Sls {
         if self.unsat {
             return;
         }
+        let mut iter = clause.iter().copied();
+        while let Some(literal) = iter.next() {
+            for other in iter.clone() {
+                if literal == -other {
+                    return;
+                }
+            }
+        }
 
+        /*
+        print!("cnf(1, axiom, $false");
+        for literal in &clause {
+            print!(" | ");
+            if *literal < 0 {
+                print!("~");
+            }
+            print!("p{}", literal.abs());
+        }
+        println!(").");
+        */
+        //println!("{:?}", clause);
         if clause.len() == 1 {
             let literal = clause[0];
             let index = literal.abs() as usize;
@@ -242,7 +261,6 @@ impl Sls {
 
 #[derive(Default)]
 pub(crate) struct Solver {
-    pub(crate) new_clauses: bool,
     sls: Sls,
     atoms: DigestMap<SATLiteral>,
     splits: DigestMap<SATLiteral>,
@@ -284,7 +302,6 @@ impl Solver {
         }
         if self.cache.insert(digest) {
             self.sls.assert(clause);
-            self.new_clauses = true;
         }
     }
 
@@ -296,12 +313,12 @@ impl Solver {
         }
     }
 
-    pub(crate) fn ground_split(&mut self, split: &Split, sat: SATLiteral) {
-        if split.variables == 0 || !self.grounded.insert(sat) {
+    pub(crate) fn ground_split(&mut self, split: &Split, label: SATLiteral) {
+        if split.variables == 0 || !self.grounded.insert(label) {
             return;
         }
 
-        let mut sat_clause = vec![-sat];
+        let mut sat_clause = vec![-label];
         for literal in &split.literals {
             sat_clause.push(self.literal(literal));
         }
@@ -311,9 +328,9 @@ impl Solver {
     pub(crate) fn assert_input_clause(&mut self, clause: &Clause) {
         let mut sat_clause = vec![];
         for split in &clause.splits {
-            let sat = self.split(split);
-            self.ground_split(split, sat);
-            sat_clause.push(sat);
+            let split_label = self.split(split);
+            self.ground_split(split, split_label);
+            sat_clause.push(split_label);
         }
         self.assert(sat_clause);
     }

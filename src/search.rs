@@ -34,12 +34,7 @@ impl<'matrix> Search<'matrix> {
                 return true;
             }
             self.start(limit);
-            if !self.solver.new_clauses {
-                limit += 1;
-            } else if limit > 1 {
-                limit -= 1
-            }
-            self.solver.new_clauses = false;
+            limit += 1;
         }
     }
 
@@ -53,16 +48,96 @@ impl<'matrix> Search<'matrix> {
         }
     }
 
+    fn factor(
+        &mut self,
+        goal: &Split,
+        goal_label: SATLiteral,
+        goal_index: usize,
+        factor_index: usize,
+    ) -> Option<Vec<Split>> {
+        let goal_literal = &goal.literals[goal_index];
+        let factor_literal = &goal.literals[factor_index];
+        // todo move to self
+        let mut unifier = Unifier::new(goal.variables);
+        if !unifier.unify(goal_literal, factor_literal, 0) {
+            return None;
+        }
+
+        let literals = goal
+            .literals
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != goal_index)
+            .map(|(_, literal)| unifier.apply(literal, 0))
+            .collect();
+
+        let splits = self.splitter.split(literals, goal.variables);
+        let mut deduction = vec![-goal_label];
+        for split in &splits {
+            let split_label = self.solver.split(split);
+            self.solver.ground_split(split, split_label);
+            deduction.push(split_label);
+        }
+        self.solver.assert(deduction);
+
+        Some(splits)
+    }
+
+    fn resolve(
+        &mut self,
+        goal: &Split,
+        goal_label: SATLiteral,
+        goal_index: usize,
+        split: &Split,
+        split_label: Option<SATLiteral>,
+        split_index: usize,
+    ) -> Option<Vec<Split>> {
+        let goal_literal = &goal.literals[goal_index];
+        let split_literal = &split.literals[split_index];
+        let mut unifier = Unifier::new(goal.variables + split.variables);
+        if !unifier.unify(goal_literal, split_literal, goal.variables) {
+            return None;
+        }
+
+        let split_label = split_label.unwrap_or_else(|| self.solver.split(split));
+        let literals = goal
+            .literals
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != goal_index)
+            .map(|(_, literal)| unifier.apply(literal, 0))
+            .chain(
+                split
+                    .literals
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| *index != split_index)
+                    .map(|(_, literal)| unifier.apply(literal, goal.variables)),
+            )
+            .collect();
+
+        let splits = self
+            .splitter
+            .split(literals, goal.variables + split.variables);
+        let mut deduction = vec![-goal_label, -split_label];
+        for split in &splits {
+            let split_label = self.solver.split(split);
+            self.solver.ground_split(split, split_label);
+            deduction.push(split_label);
+        }
+        self.solver.assert(deduction);
+
+        Some(splits)
+    }
+
     fn prove<'a>(
         &mut self,
         limit: usize,
         path: &'a Stack<'a, (&'a Split, SATLiteral)>,
         goal: &Split,
     ) {
-        if self.solver.unsat() {
-            return;
-        }
-        if limit < goal.literals.len()
+        if self.solver.unsat()
+            || limit < goal.literals.len()
             || goal.weight() > HARD_WEIGHT_LIMIT
             || goal.literals.len() > HARD_LITERAL_LIMIT
             || goal.is_tautology()
@@ -70,113 +145,71 @@ impl<'matrix> Search<'matrix> {
         {
             return;
         }
-        let sat = self.solver.split(goal);
-        if !self.solver.value(sat) {
-            return;
-        }
-        if path.iter().any(|(_, sat)| !self.solver.value(*sat)) {
+        let goal_label = self.solver.split(goal);
+        if !self.solver.value(goal_label)
+            || path.iter().any(|(_, label)| !self.solver.value(*label))
+        {
             return;
         }
 
-        for goal_literal in &goal.literals {
-            let sat_literal = self.solver.literal(goal_literal);
-            if !self.solver.value(sat_literal) {
+        for (goal_index, goal_literal) in goal.literals.iter().enumerate() {
+            let goal_literal_label = self.solver.literal(goal_literal);
+            if !self.solver.value(goal_literal_label) {
                 continue;
             }
 
             // factoring
-            for literal in goal
-                .literals
-                .iter()
-                .filter(|literal| !std::ptr::eq(goal_literal, *literal))
-            {
-                if literal.polarity != goal_literal.polarity {
+            for factor_index in goal_index + 1..goal.literals.len() {
+                let factor_literal = &goal.literals[factor_index];
+                if factor_literal.polarity != goal_literal.polarity {
                     continue;
                 }
-                if !FlatSlice::might_unify(literal.atom.as_slice(), goal_literal.atom.as_slice()) {
-                    continue;
-                }
-                let mut unifier = Unifier::new(goal.variables);
-                if !unifier.unify(literal.atom.as_slice(), goal_literal.atom.as_slice()) {
+                if !FlatSlice::might_unify(
+                    factor_literal.atom.as_slice(),
+                    goal_literal.atom.as_slice(),
+                ) {
                     continue;
                 }
 
-                let literals = goal
-                    .literals
-                    .iter()
-                    .filter(|other| !std::ptr::eq(goal_literal, *other))
-                    .map(|literal| Literal {
-                        polarity: literal.polarity,
-                        atom: unifier.apply(literal.atom.as_slice()),
-                    });
+                let splits =
+                    if let Some(splits) = self.factor(goal, goal_label, goal_index, factor_index) {
+                        splits
+                    } else {
+                        continue;
+                    };
 
-                let splits = self.splitter.split(literals);
-                let mut deduction = vec![-sat];
-                for split in &splits {
-                    let sat = self.solver.split(split);
-                    self.solver.ground_split(split, sat);
-                    deduction.push(sat);
-                }
-                self.solver.assert(deduction);
-
-                let path = Stack::Cons((goal, sat), path);
+                let path = Stack::Cons((goal, goal_label), path);
                 for split in splits {
                     self.prove(limit - 1, &path, &split);
                 }
             }
 
             // ancestor resolution
-            for (split, psat) in path.iter() {
-                for literal in &split.literals {
-                    if literal.polarity == goal_literal.polarity {
+            for (split, split_label) in path.iter() {
+                for (split_index, split_literal) in split.literals.iter().enumerate() {
+                    if split_literal.polarity == goal_literal.polarity {
                         continue;
                     }
                     if !FlatSlice::might_unify(
-                        literal.atom.as_slice(),
+                        split_literal.atom.as_slice(),
                         goal_literal.atom.as_slice(),
                     ) {
                         continue;
                     }
 
-                    let mut offset_literal = literal.clone();
-                    offset_literal.offset(goal.variables);
-                    let mut unifier = Unifier::new(goal.variables + split.variables);
-                    if !unifier.unify(offset_literal.atom.as_slice(), goal_literal.atom.as_slice())
-                    {
+                    let splits = if let Some(splits) = self.resolve(
+                        goal,
+                        goal_label,
+                        goal_index,
+                        split,
+                        Some(*split_label),
+                        split_index,
+                    ) {
+                        splits
+                    } else {
                         continue;
-                    }
-
-                    let literals = goal
-                        .literals
-                        .iter()
-                        .filter(|literal| !std::ptr::eq(goal_literal, *literal))
-                        .cloned()
-                        .chain(
-                            split
-                                .literals
-                                .iter()
-                                .filter(|other| !std::ptr::eq(*other, literal))
-                                .map(|l| {
-                                    let mut l = l.clone();
-                                    l.offset(goal.variables);
-                                    l
-                                }),
-                        )
-                        .map(|literal| Literal {
-                            polarity: literal.polarity,
-                            atom: unifier.apply(literal.atom.as_slice()),
-                        });
-
-                    let splits = self.splitter.split(literals);
-                    let mut deduction = vec![-psat, -sat];
-                    for split in &splits {
-                        let sat = self.solver.split(split);
-                        self.solver.ground_split(split, sat);
-                        deduction.push(sat);
-                    }
-                    self.solver.assert(deduction);
-
-                    let path = Stack::Cons((goal, sat), path);
+                    };
+                    let path = Stack::Cons((goal, goal_label), path);
                     for split in splits {
                         self.prove(limit - 1, &path, &split);
                     }
@@ -188,48 +221,19 @@ impl<'matrix> Search<'matrix> {
                 .query(goal_literal.index_key(), true, true)
                 .flatten()
             {
-                let (clause, _) = &self.matrix.clauses[location.clause];
+                let clause = &self.matrix.clauses[location.clause].0;
                 let split = &clause.splits[location.split];
-                let literal = &split.literals[location.literal];
+                let split_index = location.literal;
 
-                let mut offset_literal = literal.clone();
-                offset_literal.offset(goal.variables);
-                let mut unifier = Unifier::new(goal.variables + split.variables);
-                if !unifier.unify(offset_literal.atom.as_slice(), goal_literal.atom.as_slice()) {
+                let splits = if let Some(splits) =
+                    self.resolve(goal, goal_label, goal_index, split, None, split_index)
+                {
+                    splits
+                } else {
                     continue;
-                }
+                };
 
-                let literals = goal
-                    .literals
-                    .iter()
-                    .filter(|literal| !std::ptr::eq(goal_literal, *literal))
-                    .cloned()
-                    .chain(
-                        split
-                            .literals
-                            .iter()
-                            .filter(|other| !std::ptr::eq(*other, literal))
-                            .map(|l| {
-                                let mut l = l.clone();
-                                l.offset(goal.variables);
-                                l
-                            }),
-                    )
-                    .map(|literal| Literal {
-                        polarity: literal.polarity,
-                        atom: unifier.apply(literal.atom.as_slice()),
-                    });
-
-                let splits = self.splitter.split(literals);
-                let mut deduction = vec![-sat, -self.solver.split(split)];
-                for split in &splits {
-                    let sat = self.solver.split(split);
-                    self.solver.ground_split(split, sat);
-                    deduction.push(sat);
-                }
-                self.solver.assert(deduction);
-
-                let path = Stack::Cons((goal, sat), path);
+                let path = Stack::Cons((goal, goal_label), path);
                 for split in splits {
                     self.prove(limit - 1, &path, &split);
                 }
