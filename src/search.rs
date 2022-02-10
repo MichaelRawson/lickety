@@ -57,7 +57,6 @@ impl<'matrix> Search<'matrix> {
     ) -> Option<Vec<Split>> {
         let goal_literal = &goal.literals[goal_index];
         let factor_literal = &goal.literals[factor_index];
-        // todo move to self
         let mut unifier = Unifier::new(goal.variables);
         if !unifier.unify(goal_literal, factor_literal, 0) {
             return None;
@@ -83,39 +82,57 @@ impl<'matrix> Search<'matrix> {
         Some(splits)
     }
 
+    fn instantiate(
+        &mut self,
+        split: &Split,
+        split_label: SATLiteral,
+        unifier: &Unifier,
+        offset: usize,
+        variables: usize,
+    ) -> Vec<Literal> {
+        let literals = split
+            .literals
+            .iter()
+            .map(|literal| unifier.apply(literal, offset))
+            .collect::<Vec<_>>();
+        let splits = self.splitter.split(literals.clone(), variables);
+        let mut deduction = vec![-split_label];
+        for split in &splits {
+            let label = self.solver.split(split);
+            deduction.push(label);
+            self.solver.ground_split(split, label);
+        }
+        self.solver.assert(deduction);
+        literals
+    }
+
     fn resolve(
         &mut self,
         goal: &Split,
         goal_label: SATLiteral,
         goal_index: usize,
         split: &Split,
-        split_label: Option<SATLiteral>,
+        split_label: SATLiteral,
         split_index: usize,
     ) -> Option<Vec<Split>> {
         let goal_literal = &goal.literals[goal_index];
         let split_literal = &split.literals[split_index];
-        let mut unifier = Unifier::new(goal.variables + split.variables);
+
+        let variables = goal.variables + split.variables;
+        let mut unifier = Unifier::new(variables);
         if !unifier.unify(goal_literal, split_literal, goal.variables) {
             return None;
         }
 
-        let split_label = split_label.unwrap_or_else(|| self.solver.split(split));
-        let literals = goal
-            .literals
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| *index != goal_index)
-            .map(|(_, literal)| unifier.apply(literal, 0))
-            .chain(
-                split
-                    .literals
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| *index != split_index)
-                    .map(|(_, literal)| unifier.apply(literal, goal.variables)),
-            )
-            .collect();
+        let mut goal_literals = self.instantiate(goal, goal_label, &unifier, 0, variables);
+        goal_literals.swap_remove(goal_index);
 
+        let mut split_literals =
+            self.instantiate(split, split_label, &unifier, goal.variables, variables);
+        split_literals.swap_remove(split_index);
+
+        let mut literals = goal_literals;
+        literals.extend(split_literals);
         let splits = self
             .splitter
             .split(literals, goal.variables + split.variables);
@@ -140,14 +157,18 @@ impl<'matrix> Search<'matrix> {
             || limit < goal.literals.len()
             || goal.weight() > HARD_WEIGHT_LIMIT
             || goal.literals.len() > HARD_LITERAL_LIMIT
-            || goal.is_tautology()
-            || path.iter().any(|(split, _)| *split == goal)
         {
             return;
         }
         let goal_label = self.solver.split(goal);
+        if goal.is_tautology() {
+            self.solver.assert(vec![goal_label]);
+            return;
+        }
         if !self.solver.value(goal_label)
-            || path.iter().any(|(_, label)| !self.solver.value(*label))
+            || path
+                .iter()
+                .any(|(_, label)| *label == goal_label || !self.solver.value(*label))
         {
             return;
         }
@@ -197,12 +218,17 @@ impl<'matrix> Search<'matrix> {
                         continue;
                     }
 
+                    let split_literal_label = self.solver.literal(split_literal);
+                    if !self.solver.value(split_literal_label) {
+                        continue;
+                    }
+
                     let splits = if let Some(splits) = self.resolve(
                         goal,
                         goal_label,
                         goal_index,
                         split,
-                        Some(*split_label),
+                        *split_label,
                         split_index,
                     ) {
                         splits
@@ -224,10 +250,19 @@ impl<'matrix> Search<'matrix> {
                 let clause = &self.matrix.clauses[location.clause].0;
                 let split = &clause.splits[location.split];
                 let split_index = location.literal;
+                let split_label = self.solver.split(split);
+                if !self.solver.value(split_label) {
+                    continue;
+                }
 
-                let splits = if let Some(splits) =
-                    self.resolve(goal, goal_label, goal_index, split, None, split_index)
-                {
+                let splits = if let Some(splits) = self.resolve(
+                    goal,
+                    goal_label,
+                    goal_index,
+                    split,
+                    split_label,
+                    split_index,
+                ) {
                     splits
                 } else {
                     continue;
