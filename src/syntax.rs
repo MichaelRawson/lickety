@@ -24,7 +24,7 @@ pub(crate) enum Name {
 impl fmt::Display for Name {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Self::Equality => write!(f, "sPE"),
+            Self::Equality => write!(f, "="),
             Self::Atom(s) | Self::Number(s) => write!(f, "{}", s),
             Self::Quoted(quoted) => write!(f, "'{}'", quoted),
             Self::Distinct(distinct) => write!(f, "\"{}\"", distinct),
@@ -37,15 +37,10 @@ impl fmt::Display for Name {
 pub(crate) struct Symbol {
     pub(crate) number: usize,
     pub(crate) arity: usize,
-    pub(crate) sort: Sort,
     pub(crate) name: Name,
 }
 
 impl Symbol {
-    pub(crate) fn is_predicate(&self) -> bool {
-        matches!(self.sort, Sort::Boolean)
-    }
-
     pub(crate) fn is_equality(&self) -> bool {
         matches!(self.name, Name::Equality)
     }
@@ -236,19 +231,14 @@ impl Nnf {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum Source {
-    Equality,
-    Axiom { path: Rc<str>, name: Rc<str> },
+pub(crate) struct Source {
+    pub(crate) path: Rc<str>,
+    pub(crate) name: Rc<str>,
 }
 
 impl fmt::Display for Source {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Self::Equality => write!(fmt, "theory(equality)"),
-            Self::Axiom { path, name } => {
-                write!(fmt, "file({}, {})", path, name)
-            }
-        }
+        write!(fmt, "file({}, {})", self.path, self.name)
     }
 }
 
@@ -329,15 +319,11 @@ impl<'a> FlatSlice<'a> {
         self.0.iter().copied().filter_map(Flat::variable)
     }
 
-    fn symbols(self) -> impl Iterator<Item = SymbolRef> + 'a {
-        self.0.iter().copied().filter_map(Flat::symbol)
-    }
-
-    fn index_key(self) -> impl Iterator<Item = Option<SymbolRef>> + 'a {
+    pub(crate) fn index_key(self) -> impl Iterator<Item = Option<SymbolRef>> + 'a {
         self.0.iter().copied().map(Flat::symbol)
     }
 
-    fn as_equation(self) -> Option<(&'a [Flat], &'a [Flat])> {
+    fn as_equation(self) -> Option<(Self, Self)> {
         let f = if let Flat::Symbol(f, _) = self.0[0] {
             f
         } else {
@@ -348,8 +334,8 @@ impl<'a> FlatSlice<'a> {
         }
         let args = &self.0[1..];
         let jump = args[0].jump();
-        let left = &args[..jump];
-        let right = &args[jump..];
+        let left = Self(&args[..jump]);
+        let right = Self(&args[jump..]);
         Some((left, right))
     }
 
@@ -379,6 +365,16 @@ impl<'a> FlatSlice<'a> {
             index += jump;
             arg
         })
+    }
+
+    pub(crate) fn subterm_indices(self) -> impl Iterator<Item = usize> + 'a {
+        (1..self.0.len())
+            .into_iter()
+            .filter(|index| self.0[*index].symbol().is_some())
+    }
+
+    pub(crate) fn at_index(self, index: usize) -> Self {
+        Self(&self.0[index..]).trim_to_next()
     }
 
     pub(crate) fn is_empty(self) -> bool {
@@ -419,6 +415,29 @@ impl<'a> FlatSlice<'a> {
             }
         }
         true
+    }
+
+    pub(crate) fn substitute(&self, at: usize, with: FlatVec) -> FlatVec {
+        let mut result = FlatVec::default();
+        let current_jump = self.0[at].jump() as isize;
+        let new_jump = with.as_slice().0[0].jump() as isize;
+        let difference = new_jump - current_jump;
+        for i in 0..at {
+            let mut flat = self.0[i];
+            let jump = flat.jump();
+            if i + jump > at {
+                let computed = (jump as isize + difference) as usize;
+                if let Flat::Symbol(_, jump) = &mut flat {
+                    *jump = computed;
+                }
+            }
+            result.push(flat);
+        }
+        result.0.extend(with.0);
+        let after = at + self.0[at].jump();
+        result.0.extend(self.0[after..].iter().copied());
+
+        result
     }
 }
 
@@ -555,10 +574,6 @@ pub(crate) struct Literal {
 }
 
 impl Literal {
-    pub(crate) fn symbols(&self) -> impl Iterator<Item = SymbolRef> + '_ {
-        self.atom.as_slice().symbols()
-    }
-
     pub(crate) fn variables(&self) -> impl Iterator<Item = usize> + '_ {
         self.atom.as_slice().variables()
     }
@@ -580,13 +595,35 @@ impl Literal {
         self.atom.as_slice().hash_nonground(digest);
     }
 
+    pub(crate) fn is_equation(&self) -> bool {
+        self.atom
+            .as_slice()
+            .head()
+            .symbol()
+            .map(|f| f.symbol.is_equality())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn as_equation(&self) -> Option<(FlatSlice, FlatSlice)> {
+        self.atom.as_slice().as_equation()
+    }
+
+    pub(crate) fn subterm_indices(&self) -> impl Iterator<Item = usize> + '_ {
+        self.atom.as_slice().subterm_indices()
+    }
+
+    pub(crate) fn substitute(&self, at: usize, with: FlatVec) -> Self {
+        Self {
+            polarity: self.polarity,
+            atom: Rc::new(self.atom.as_slice().substitute(at, with)),
+        }
+    }
+
     fn is_equational_tautology(&self) -> bool {
         if !self.polarity {
             return false;
         }
-        self.atom
-            .as_slice()
-            .as_equation()
+        self.as_equation()
             .map(|(left, right)| left == right)
             .unwrap_or_default()
     }
@@ -594,6 +631,15 @@ impl Literal {
 
 impl fmt::Display for Literal {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        if let Some((left, right)) = self.atom.as_slice().as_equation() {
+            if self.polarity {
+                write!(fmt, "{} = {}", left, right)?;
+            } else {
+                write!(fmt, "{} != {}", left, right)?;
+            }
+            return Ok(());
+        }
+
         if !self.polarity {
             write!(fmt, "~")?;
         }
@@ -608,10 +654,6 @@ pub(crate) struct Split {
 }
 
 impl Split {
-    pub(crate) fn symbols(&self) -> impl Iterator<Item = SymbolRef> + '_ {
-        self.literals.iter().flat_map(|literal| literal.symbols())
-    }
-
     pub(crate) fn weight(&self) -> usize {
         self.literals.iter().map(Literal::weight).sum()
     }
@@ -670,12 +712,6 @@ pub(crate) struct Clause {
     pub(crate) splits: Vec<Split>,
 }
 
-impl Clause {
-    pub(crate) fn symbols(&self) -> impl Iterator<Item = SymbolRef> + '_ {
-        self.splits.iter().flat_map(|split| split.symbols())
-    }
-}
-
 impl fmt::Display for Clause {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         if self.splits.is_empty() {
@@ -701,11 +737,25 @@ pub(crate) struct Location {
     pub(crate) literal: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EqualityLocation {
+    pub(crate) location: Location,
+    pub(crate) l2r: bool
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SubtermLocation {
+    pub(crate) location: Location,
+    pub(crate) index: usize
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Matrix {
     pub(crate) clauses: Vec<(Clause, Info)>,
     pub(crate) goal_clauses: Vec<usize>,
-    pub(crate) index: [DiscriminationTree<SymbolRef, Vec<Location>>; 2],
+    pub(crate) predicates: [DiscriminationTree<SymbolRef, Vec<Location>>; 2],
+    pub(crate) equations: DiscriminationTree<SymbolRef, Vec<EqualityLocation>>,
+    pub(crate) subterms: DiscriminationTree<SymbolRef, Vec<SubtermLocation>>,
 }
 
 impl fmt::Display for Matrix {

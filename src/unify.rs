@@ -95,18 +95,33 @@ impl<'a> Unifier<'a> {
         }
     }
 
-    pub(crate) fn unify(&mut self, left: &'a Literal, right: &'a Literal, offset: usize) -> bool {
-        self.unify_offset(
-            Offset::new(left.atom.as_slice(), 0),
-            Offset::new(right.atom.as_slice(), offset),
-        )
+    pub(crate) fn unify_term(
+        &mut self,
+        left: FlatSlice<'a>,
+        right: FlatSlice<'a>,
+        offset: usize,
+    ) -> bool {
+        self.unify_offset(Offset::new(left, 0), Offset::new(right, offset))
     }
 
-    pub(crate) fn apply(&self, literal: &Literal, offset: usize) -> Literal {
-        let polarity = literal.polarity;
+    pub(crate) fn unify_literal(
+        &mut self,
+        left: &'a Literal,
+        right: &'a Literal,
+        offset: usize,
+    ) -> bool {
+        self.unify_term(left.atom.as_slice(), right.atom.as_slice(), offset)
+    }
+
+    pub(crate) fn apply_term(&self, flat: FlatSlice<'a>, offset: usize) -> FlatVec {
         let mut atom = FlatVec::default();
-        self.apply_rec(&mut atom, Offset::new(literal.atom.as_slice(), offset));
-        let atom = Rc::new(atom);
+        self.apply_rec(&mut atom, Offset::new(flat, offset));
+        atom
+    }
+
+    pub(crate) fn apply_literal(&self, literal: &Literal, offset: usize) -> Literal {
+        let polarity = literal.polarity;
+        let atom = Rc::new(self.apply_term(literal.atom.as_slice(), offset));
         Literal { polarity, atom }
     }
 }

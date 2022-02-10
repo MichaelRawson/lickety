@@ -56,7 +56,6 @@ impl NormalForm {
         self.variables.remove(x);
         let args: Vec<FofTerm> = self.variables.members().map(FofTerm::Variable).collect();
         let arity = args.len();
-        let sort = Sort::Individual;
 
         let number = *fresh_symbol;
         *fresh_symbol += 1;
@@ -65,7 +64,6 @@ impl NormalForm {
         let symbol = SymbolRef::new(Symbol {
             number,
             arity,
-            sort,
             name,
         });
         let term = FofTerm::Function(symbol, args);
