@@ -62,17 +62,16 @@ struct Loader {
 impl Loader {
     fn get_equality_symbol(&mut self) -> syntax::SymbolRef {
         *self.equality.get_or_insert_with(|| {
-            let number = self.fresh_symbol;
-            self.fresh_symbol += 1;
             syntax::SymbolRef::new(syntax::Symbol {
-                number,
+                number: 1,
                 arity: 2,
+                sort: syntax::Sort::Boolean,
                 name: syntax::Name::Equality,
             })
         })
     }
 
-    fn defined_term(&mut self, term: common::DefinedTerm) -> syntax::FofTerm {
+    fn defined_term(&mut self, term: common::DefinedTerm, sort: syntax::Sort) -> syntax::FofTerm {
         let (lookup, borrowed) = match term {
             common::DefinedTerm::Number(ref number) => {
                 let borrowed = match number {
@@ -96,6 +95,7 @@ impl Loader {
             let symbol = syntax::SymbolRef::new(syntax::Symbol {
                 number,
                 arity: 0,
+                sort,
                 name,
             });
             lookup.insert(borrowed.to_owned(), symbol);
@@ -137,6 +137,7 @@ impl Loader {
             let symbol = syntax::SymbolRef::new(syntax::Symbol {
                 number,
                 arity,
+                sort,
                 name,
             });
             lookup.insert(entry, symbol);
@@ -149,9 +150,13 @@ impl Loader {
         Ok(syntax::FofTerm::Function(symbol, args))
     }
 
-    fn fof_defined_term(&mut self, term: fof::DefinedTerm) -> anyhow::Result<syntax::FofTerm> {
+    fn fof_defined_term(
+        &mut self,
+        term: fof::DefinedTerm,
+        sort: syntax::Sort,
+    ) -> anyhow::Result<syntax::FofTerm> {
         match term {
-            fof::DefinedTerm::Defined(defined) => Ok(self.defined_term(defined)),
+            fof::DefinedTerm::Defined(defined) => Ok(self.defined_term(defined, sort)),
             fof::DefinedTerm::Atomic(atomic) => {
                 Err(anyhow!("unsupported defined term: {}", atomic))
             }
@@ -167,7 +172,7 @@ impl Loader {
     ) -> anyhow::Result<syntax::FofTerm> {
         match term {
             FunctionTerm::Plain(term) => self.fof_plain_term(bound, free, term, sort),
-            FunctionTerm::Defined(def) => self.fof_defined_term(def),
+            FunctionTerm::Defined(def) => self.fof_defined_term(def, sort),
             FunctionTerm::System(system) => Err(anyhow!("unsupported system term: {}", system)),
         }
     }
@@ -465,7 +470,7 @@ impl Loader {
         let role = (annotated.role.0).0;
         let negate = role == "conjecture";
         let is_goal = negate || role == "negated_conjecture";
-        let source = syntax::Source {
+        let source = syntax::Source::Axiom {
             path,
             name: annotated.name.to_string().into(),
         };
@@ -552,7 +557,7 @@ impl Dialect for cnf::Formula<'_> {
 
 pub(crate) fn load(path: &path::Path) -> anyhow::Result<syntax::Matrix> {
     let mut loader = Loader {
-        fresh_symbol: 1,
+        fresh_symbol: 2,
         ..Default::default()
     };
     loader

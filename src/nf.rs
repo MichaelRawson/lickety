@@ -64,6 +64,7 @@ impl NormalForm {
         let symbol = SymbolRef::new(Symbol {
             number,
             arity,
+            sort: Sort::Individual,
             name,
         });
         let term = FofTerm::Function(symbol, args);
