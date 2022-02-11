@@ -11,14 +11,14 @@ pub(crate) struct Builder {
     congruence_symbols: FnvHashSet<SymbolRef>,
 }
 
-fn build_term(out: &mut FlatVec, term: &FofTerm) {
+fn build_term(out: &mut FlatBuf, term: &FofTerm) {
     match term {
         FofTerm::Variable(x) => {
-            out.push(Flat::Variable(*x));
+            out.push(FlatCell::Variable(*x));
         }
         FofTerm::Function(f, ts) => {
-            let index = out.as_slice().len();
-            out.push(Flat::Symbol(*f, 0));
+            let index = out.flat().len();
+            out.push(FlatCell::Symbol(*f, 0));
             for t in ts {
                 build_term(out, t);
             }
@@ -29,7 +29,7 @@ fn build_term(out: &mut FlatVec, term: &FofTerm) {
 
 fn build_literal(literal: &NnfLiteral) -> Literal {
     let polarity = literal.polarity;
-    let mut atom = FlatVec::default();
+    let mut atom = FlatBuf::default();
     build_term(&mut atom, &literal.atom);
     let atom = Rc::new(atom);
     Literal { polarity, atom }

@@ -269,7 +269,7 @@ pub(crate) struct Solver {
 }
 
 impl Solver {
-    fn atom(&mut self, atom: FlatSlice) -> SATLiteral {
+    fn atom(&mut self, atom: &FlatBuf) -> SATLiteral {
         let sls = &mut self.sls;
         *self
             .atoms
@@ -278,7 +278,7 @@ impl Solver {
     }
 
     pub(crate) fn literal(&mut self, literal: &Literal) -> SATLiteral {
-        let mut sat = self.atom(literal.atom.as_slice());
+        let mut sat = self.atom(&literal.atom);
         if !literal.polarity {
             sat = -sat;
         }
@@ -293,6 +293,14 @@ impl Solver {
             .or_insert_with(|| sls.fresh())
     }
 
+    pub(crate) fn split(&mut self, split: &Split) -> SATLiteral {
+        if split.variables == 0 {
+            self.literal(&split.literals[0])
+        } else {
+            self.proper_split(split)
+        }
+    }
+
     pub(crate) fn assert(&mut self, mut clause: Vec<SATLiteral>) {
         clause.sort_unstable();
         clause.dedup();
@@ -302,14 +310,6 @@ impl Solver {
         }
         if self.cache.insert(digest) {
             self.sls.assert(clause);
-        }
-    }
-
-    pub(crate) fn split(&mut self, split: &Split) -> SATLiteral {
-        if split.variables == 0 {
-            self.literal(&split.literals[0])
-        } else {
-            self.proper_split(split)
         }
     }
 

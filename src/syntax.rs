@@ -261,12 +261,12 @@ pub(crate) struct Info {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum Flat {
+pub(crate) enum FlatCell {
     Variable(usize),
     Symbol(SymbolRef, usize),
 }
 
-impl Flat {
+impl FlatCell {
     fn jump(self) -> usize {
         match self {
             Self::Variable(_) => 1,
@@ -290,32 +290,20 @@ impl Flat {
         }
     }
 
-    fn offset(self, offset: usize) -> Self {
-        match self {
-            Self::Variable(x) => Self::Variable(x + offset),
-            f => f,
-        }
-    }
-
     fn hash_nonground(self, digest: &mut Digest) {
-        match self {
-            Flat::Variable(x) => {
-                let code = -(x as isize);
-                digest.update(code);
-            }
-            Flat::Symbol(f, _) => {
-                let code = f.symbol.number as isize;
-                digest.update(code);
-            }
-        }
+        let code = match self {
+            FlatCell::Variable(x) => -(x as isize),
+            FlatCell::Symbol(f, _) => f.symbol.number as isize,
+        };
+        digest.update(code);
     }
 
     fn hash_grounded(self, digest: &mut Digest) {
         match self {
-            Flat::Variable(_) => {
-                digest.update(0);
+            FlatCell::Variable(_) => {
+                digest.zero();
             }
-            Flat::Symbol(f, _) => {
+            FlatCell::Symbol(f, _) => {
                 let code = f.symbol.number as isize;
                 digest.update(code);
             }
@@ -324,23 +312,23 @@ impl Flat {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct FlatSlice<'a>(&'a [Flat]);
+pub(crate) struct Flat<'a>(&'a [FlatCell]);
 
-impl<'a> FlatSlice<'a> {
+impl<'a> Flat<'a> {
     fn variables(self) -> impl Iterator<Item = usize> + 'a {
-        self.0.iter().copied().filter_map(Flat::variable)
+        self.into_iter().filter_map(FlatCell::variable)
     }
 
     fn symbols(self) -> impl Iterator<Item = SymbolRef> + 'a {
-        self.0.iter().copied().filter_map(Flat::symbol)
+        self.into_iter().filter_map(FlatCell::symbol)
     }
 
     pub(crate) fn index_key(self) -> impl Iterator<Item = Option<SymbolRef>> + 'a {
-        self.0.iter().copied().map(Flat::symbol)
+        self.into_iter().map(FlatCell::symbol)
     }
 
     fn as_equation(self) -> Option<(Self, Self)> {
-        let f = if let Flat::Symbol(f, _) = self.0[0] {
+        let f = if let FlatCell::Symbol(f, _) = self.0[0] {
             f
         } else {
             return None;
@@ -355,29 +343,27 @@ impl<'a> FlatSlice<'a> {
         Some((left, right))
     }
 
+    fn hash_grounded(self, digest: &mut Digest) {
+        for flat in self.0 {
+            flat.hash_grounded(digest);
+        }
+    }
+
     fn hash_nonground(self, digest: &mut Digest) {
         for flat in self.0 {
             flat.hash_nonground(digest);
         }
     }
 
-    pub(crate) fn hash_grounded(self) -> Digest {
-        let mut digest = Digest::default();
-        for flat in self.0 {
-            flat.hash_grounded(&mut digest);
-        }
-        digest
-    }
-
-    pub(crate) fn args(self) -> impl Iterator<Item = FlatSlice<'a>> {
+    pub(crate) fn args(self) -> impl Iterator<Item = Flat<'a>> {
         let arity = match self.0[0] {
-            Flat::Symbol(f, _) => f.symbol.arity,
+            FlatCell::Symbol(f, _) => f.symbol.arity,
             _ => unreachable!(),
         };
         let mut index = 1;
         (0..arity).into_iter().map(move |_| {
             let jump = self.0[index].jump();
-            let arg = FlatSlice(&self.0[index..index + jump]);
+            let arg = Flat(&self.0[index..index + jump]);
             index += jump;
             arg
         })
@@ -391,7 +377,7 @@ impl<'a> FlatSlice<'a> {
         self.0.len()
     }
 
-    pub(crate) fn head(self) -> Flat {
+    pub(crate) fn head(self) -> FlatCell {
         self.0[0]
     }
 
@@ -409,7 +395,7 @@ impl<'a> FlatSlice<'a> {
 
     pub(crate) fn might_unify(mut left: Self, mut right: Self) -> bool {
         while !left.is_empty() && !right.is_empty() {
-            if let (Flat::Symbol(f, _), Flat::Symbol(g, _)) = (left.head(), right.head()) {
+            if let (FlatCell::Symbol(f, _), FlatCell::Symbol(g, _)) = (left.head(), right.head()) {
                 if f != g {
                     return false;
                 }
@@ -424,20 +410,20 @@ impl<'a> FlatSlice<'a> {
     }
 }
 
-impl<'a> IntoIterator for FlatSlice<'a> {
-    type Item = &'a Flat;
-    type IntoIter = std::slice::Iter<'a, Flat>;
+impl<'a> IntoIterator for Flat<'a> {
+    type Item = FlatCell;
+    type IntoIter = std::iter::Copied<std::slice::Iter<'a, FlatCell>>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.0.iter()
+        self.0.iter().copied()
     }
 }
 
-impl<'a> fmt::Display for FlatSlice<'a> {
+impl<'a> fmt::Display for Flat<'a> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match self.head() {
-            Flat::Variable(x) => write!(fmt, "X{}", x),
-            Flat::Symbol(f, _) => {
+            FlatCell::Variable(x) => write!(fmt, "X{}", x),
+            FlatCell::Symbol(f, _) => {
                 f.symbol.fmt(fmt)?;
                 if f.symbol.arity > 0 {
                     write!(fmt, "(")?;
@@ -457,78 +443,29 @@ impl<'a> fmt::Display for FlatSlice<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Offset<'a> {
-    flat: FlatSlice<'a>,
-    offset: usize,
-}
-
-impl<'a> Offset<'a> {
-    pub(crate) fn new(flat: FlatSlice<'a>, offset: usize) -> Self {
-        Self { flat, offset }
-    }
-
-    pub(crate) fn is_empty(self) -> bool {
-        self.flat.is_empty()
-    }
-
-    pub(crate) fn head(self) -> Flat {
-        self.flat.head().offset(self.offset)
-    }
-
-    pub(crate) fn tail(self) -> Self {
-        Self {
-            flat: self.flat.tail(),
-            offset: self.offset,
-        }
-    }
-
-    pub(crate) fn next(self) -> Self {
-        Self {
-            flat: self.flat.next(),
-            offset: self.offset,
-        }
-    }
-
-    pub(crate) fn args(self) -> impl Iterator<Item = Offset<'a>> {
-        let offset = self.offset;
-        self.flat.args().map(move |flat| Self { flat, offset })
-    }
-
-    pub(crate) fn iter(self) -> impl Iterator<Item = Flat> + 'a {
-        let offset = self.offset;
-        self.flat
-            .0
-            .iter()
-            .copied()
-            .map(move |flat| flat.offset(offset))
-    }
-
-    pub(crate) fn trim_to_next(self) -> Self {
-        Self {
-            flat: self.flat.trim_to_next(),
-            offset: self.offset,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct FlatVec(Vec<Flat>);
+pub(crate) struct FlatBuf(Vec<FlatCell>);
 
-impl FlatVec {
+impl FlatBuf {
     fn rename(&mut self, renaming: &mut Renaming) {
         for mut flat in &mut self.0 {
-            if let Flat::Variable(x) = &mut flat {
+            if let FlatCell::Variable(x) = &mut flat {
                 *x = renaming.rename(*x);
             }
         }
     }
 
-    pub(crate) fn as_slice(&self) -> FlatSlice {
-        FlatSlice(&self.0)
+    pub(crate) fn hash_grounded(&self) -> Digest {
+        let mut digest = Digest::default();
+        self.flat().hash_grounded(&mut digest);
+        digest
     }
 
-    pub(crate) fn push(&mut self, flat: Flat) {
+    pub(crate) fn flat(&self) -> Flat {
+        Flat(&self.0)
+    }
+
+    pub(crate) fn push(&mut self, flat: FlatCell) {
         self.0.push(flat);
     }
 
@@ -536,41 +473,41 @@ impl FlatVec {
         let end = self.0.len();
         let computed = end - index;
         match &mut self.0[index] {
-            Flat::Variable(_) => {}
-            Flat::Symbol(_, jump) => {
+            FlatCell::Variable(_) => {}
+            FlatCell::Symbol(_, jump) => {
                 *jump = computed;
             }
         }
     }
 }
 
-impl fmt::Display for FlatVec {
+impl fmt::Display for FlatBuf {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        self.as_slice().fmt(fmt)
+        self.flat().fmt(fmt)
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Literal {
     pub(crate) polarity: bool,
-    pub(crate) atom: Rc<FlatVec>,
+    pub(crate) atom: Rc<FlatBuf>,
 }
 
 impl Literal {
     pub(crate) fn variables(&self) -> impl Iterator<Item = usize> + '_ {
-        self.atom.as_slice().variables()
+        self.atom.flat().variables()
     }
 
     pub(crate) fn symbols(&self) -> impl Iterator<Item = SymbolRef> + '_ {
-        self.atom.as_slice().symbols()
+        self.atom.flat().symbols()
     }
 
     pub(crate) fn index_key(&self) -> impl Iterator<Item = Option<SymbolRef>> + '_ {
-        self.atom.as_slice().index_key()
+        self.atom.flat().index_key()
     }
 
     pub(crate) fn weight(&self) -> usize {
-        self.atom.as_slice().len()
+        self.atom.flat().len()
     }
 
     pub(crate) fn rename(&mut self, renaming: &mut Renaming) {
@@ -578,12 +515,14 @@ impl Literal {
     }
 
     fn hash_nonground(&self, digest: &mut Digest) {
-        digest.update(self.polarity as isize);
-        self.atom.as_slice().hash_nonground(digest);
+        if !self.polarity {
+            digest.zero();
+        }
+        self.atom.flat().hash_nonground(digest);
     }
 
-    pub(crate) fn as_equation(&self) -> Option<(FlatSlice, FlatSlice)> {
-        self.atom.as_slice().as_equation()
+    pub(crate) fn as_equation(&self) -> Option<(Flat, Flat)> {
+        self.atom.flat().as_equation()
     }
 
     fn is_equational_tautology(&self) -> bool {

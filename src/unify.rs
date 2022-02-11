@@ -1,6 +1,66 @@
 use crate::syntax::*;
 use std::rc::Rc;
 
+fn offset_flat(flat: FlatCell, offset: usize) -> FlatCell {
+    match flat {
+        FlatCell::Variable(x) => FlatCell::Variable(x + offset),
+        f => f,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Offset<'a> {
+    flat: Flat<'a>,
+    offset: usize,
+}
+
+impl<'a> Offset<'a> {
+    pub(crate) fn new(flat: Flat<'a>, offset: usize) -> Self {
+        Self { flat, offset }
+    }
+
+    pub(crate) fn is_empty(self) -> bool {
+        self.flat.is_empty()
+    }
+
+    pub(crate) fn head(self) -> FlatCell {
+        offset_flat(self.flat.head(), self.offset)
+    }
+
+    pub(crate) fn tail(self) -> Self {
+        Self {
+            flat: self.flat.tail(),
+            offset: self.offset,
+        }
+    }
+
+    pub(crate) fn next(self) -> Self {
+        Self {
+            flat: self.flat.next(),
+            offset: self.offset,
+        }
+    }
+
+    pub(crate) fn args(self) -> impl Iterator<Item = Offset<'a>> {
+        let offset = self.offset;
+        self.flat.args().map(move |flat| Self { flat, offset })
+    }
+
+    pub(crate) fn iter(self) -> impl Iterator<Item = FlatCell> + 'a {
+        let offset = self.offset;
+        self.flat
+            .into_iter()
+            .map(move |flat| offset_flat(flat, offset))
+    }
+
+    pub(crate) fn trim_to_next(self) -> Self {
+        Self {
+            flat: self.flat.trim_to_next(),
+            offset: self.offset,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Unifier<'a> {
     bindings: Vec<Option<Offset<'a>>>,
@@ -9,7 +69,7 @@ pub(crate) struct Unifier<'a> {
 impl<'a> Unifier<'a> {
     fn occurs(&self, x: usize, offset: Offset<'a>) -> bool {
         for flat in offset.iter() {
-            if let Flat::Variable(y) = flat {
+            if let FlatCell::Variable(y) = flat {
                 if x == y {
                     return true;
                 }
@@ -23,18 +83,18 @@ impl<'a> Unifier<'a> {
         false
     }
 
-    fn apply_rec(&self, out: &mut FlatVec, offset: Offset<'a>) {
+    fn apply_rec(&self, out: &mut FlatBuf, offset: Offset<'a>) {
         match offset.head() {
-            Flat::Variable(x) => {
+            FlatCell::Variable(x) => {
                 if let Some(bound) = self.bindings[x] {
                     self.apply_rec(out, bound);
                 } else {
-                    out.push(Flat::Variable(x));
+                    out.push(FlatCell::Variable(x));
                 }
             }
-            Flat::Symbol(f, _) => {
-                let start = out.as_slice().len();
-                out.push(Flat::Symbol(f, 0));
+            FlatCell::Symbol(f, _) => {
+                let start = out.flat().len();
+                out.push(FlatCell::Symbol(f, 0));
                 for arg in offset.args() {
                     self.apply_rec(out, arg);
                 }
@@ -46,21 +106,21 @@ impl<'a> Unifier<'a> {
     fn unify_offset(&mut self, mut left: Offset<'a>, mut right: Offset<'a>) -> bool {
         while !left.is_empty() && !right.is_empty() {
             match (left.head(), right.head()) {
-                (Flat::Variable(x), _) => {
+                (FlatCell::Variable(x), _) => {
                     if let Some(bound) = self.bindings[x] {
                         if !self.unify_offset(bound, right) {
                             return false;
                         }
                     } else {
                         let mut term = right.trim_to_next();
-                        while let Flat::Variable(y) = term.head() {
+                        while let FlatCell::Variable(y) = term.head() {
                             if let Some(bound) = self.bindings[y] {
                                 term = bound;
                             } else {
                                 break;
                             }
                         }
-                        if let Flat::Variable(y) = term.head() {
+                        if let FlatCell::Variable(y) = term.head() {
                             if x != y {
                                 self.bindings[x] = Some(term);
                             }
@@ -74,10 +134,10 @@ impl<'a> Unifier<'a> {
                     left = left.tail();
                     right = right.next();
                 }
-                (_, Flat::Variable(_)) => {
+                (_, FlatCell::Variable(_)) => {
                     std::mem::swap(&mut left, &mut right);
                 }
-                (Flat::Symbol(f, _), Flat::Symbol(g, _)) => {
+                (FlatCell::Symbol(f, _), FlatCell::Symbol(g, _)) => {
                     if f != g {
                         return false;
                     }
@@ -95,12 +155,7 @@ impl<'a> Unifier<'a> {
         }
     }
 
-    pub(crate) fn unify_term(
-        &mut self,
-        left: FlatSlice<'a>,
-        right: FlatSlice<'a>,
-        offset: usize,
-    ) -> bool {
+    pub(crate) fn unify_term(&mut self, left: Flat<'a>, right: Flat<'a>, offset: usize) -> bool {
         self.unify_offset(Offset::new(left, 0), Offset::new(right, offset))
     }
 
@@ -110,18 +165,18 @@ impl<'a> Unifier<'a> {
         right: &'a Literal,
         offset: usize,
     ) -> bool {
-        self.unify_term(left.atom.as_slice(), right.atom.as_slice(), offset)
+        self.unify_term(left.atom.flat(), right.atom.flat(), offset)
     }
 
-    pub(crate) fn apply_term(&self, flat: FlatSlice<'a>, offset: usize) -> FlatVec {
-        let mut atom = FlatVec::default();
+    pub(crate) fn apply_term(&self, flat: Flat<'a>, offset: usize) -> FlatBuf {
+        let mut atom = FlatBuf::default();
         self.apply_rec(&mut atom, Offset::new(flat, offset));
         atom
     }
 
     pub(crate) fn apply_literal(&self, literal: &Literal, offset: usize) -> Literal {
         let polarity = literal.polarity;
-        let atom = Rc::new(self.apply_term(literal.atom.as_slice(), offset));
+        let atom = Rc::new(self.apply_term(literal.atom.flat(), offset));
         Literal { polarity, atom }
     }
 }

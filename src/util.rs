@@ -107,12 +107,10 @@ impl Default for DefaultRng {
 }
 
 impl DefaultRng {
-    #[inline]
     pub(crate) fn index(&mut self, max: usize) -> usize {
         self.0.gen_range(0..max)
     }
 
-    #[inline]
     pub(crate) fn choose<'a, T>(&mut self, slice: &'a [T]) -> Option<&'a T> {
         slice.choose(&mut self.0)
     }

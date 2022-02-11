@@ -59,7 +59,7 @@ impl<'matrix> Search<'matrix> {
             return None;
         }
         let (left, right) = goal_literal.as_equation()?;
-        if !FlatSlice::might_unify(left, right) {
+        if !Flat::might_unify(left, right) {
             return None;
         }
 
@@ -100,7 +100,7 @@ impl<'matrix> Search<'matrix> {
         if factor_literal.polarity != goal_literal.polarity {
             return None;
         }
-        if !FlatSlice::might_unify(factor_literal.atom.as_slice(), goal_literal.atom.as_slice()) {
+        if !Flat::might_unify(factor_literal.atom.flat(), goal_literal.atom.flat()) {
             return None;
         }
 
@@ -170,8 +170,7 @@ impl<'matrix> Search<'matrix> {
             if split_literal.polarity == goal_literal.polarity {
                 return None;
             }
-            if !FlatSlice::might_unify(split_literal.atom.as_slice(), goal_literal.atom.as_slice())
-            {
+            if !Flat::might_unify(split_literal.atom.flat(), goal_literal.atom.flat()) {
                 return None;
             }
         }
