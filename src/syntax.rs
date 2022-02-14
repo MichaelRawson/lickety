@@ -290,7 +290,7 @@ impl FlatCell {
         }
     }
 
-    fn hash_nonground(self, digest: &mut Digest) {
+    fn digest_with_vars(self, digest: &mut Digest) {
         let code = match self {
             FlatCell::Variable(x) => -(x as isize),
             FlatCell::Symbol(f, _) => f.symbol.number as isize,
@@ -298,7 +298,7 @@ impl FlatCell {
         digest.update(code);
     }
 
-    fn hash_grounded(self, digest: &mut Digest) {
+    fn digest_zero_vars(self, digest: &mut Digest) {
         match self {
             FlatCell::Variable(_) => {
                 digest.zero();
@@ -343,15 +343,15 @@ impl<'a> Flat<'a> {
         Some((left, right))
     }
 
-    fn hash_grounded(self, digest: &mut Digest) {
+    fn digest_zero_vars(self, digest: &mut Digest) {
         for flat in self.0 {
-            flat.hash_grounded(digest);
+            flat.digest_zero_vars(digest);
         }
     }
 
-    fn hash_nonground(self, digest: &mut Digest) {
+    fn digest_with_vars(self, digest: &mut Digest) {
         for flat in self.0 {
-            flat.hash_nonground(digest);
+            flat.digest_with_vars(digest);
         }
     }
 
@@ -455,9 +455,9 @@ impl FlatBuf {
         }
     }
 
-    pub(crate) fn hash_grounded(&self) -> Digest {
+    pub(crate) fn digest_zero_vars(&self) -> Digest {
         let mut digest = Digest::default();
-        self.flat().hash_grounded(&mut digest);
+        self.flat().digest_zero_vars(&mut digest);
         digest
     }
 
@@ -514,11 +514,11 @@ impl Literal {
         Rc::make_mut(&mut self.atom).rename(renaming);
     }
 
-    fn hash_nonground(&self, digest: &mut Digest) {
+    fn digest_with_vars(&self, digest: &mut Digest) {
         if !self.polarity {
             digest.zero();
         }
-        self.atom.flat().hash_nonground(digest);
+        self.atom.flat().digest_with_vars(digest);
     }
 
     pub(crate) fn as_equation(&self) -> Option<(Flat, Flat)> {
@@ -544,15 +544,33 @@ impl fmt::Display for Literal {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub(crate) struct Split {
     pub(crate) variables: usize,
     pub(crate) literals: Vec<Literal>,
+    pub(crate) polarity: bool,
+    pub(crate) digest: Digest,
 }
 
 impl Split {
-    pub(crate) fn weight(&self) -> usize {
-        self.literals.iter().map(Literal::weight).sum()
+    pub(crate) fn new(variables: usize, literals: Vec<Literal>) -> Self {
+        let (polarity, digest) = if variables == 0 {
+            let unit = &literals[0];
+            (unit.polarity, unit.atom.digest_zero_vars())
+        } else {
+            let mut digest = Digest::default();
+            for literal in &literals {
+                literal.digest_with_vars(&mut digest);
+            }
+            (true, digest)
+        };
+
+        Self {
+            variables,
+            literals,
+            polarity,
+            digest,
+        }
     }
 
     pub(crate) fn is_tautology(&self) -> bool {
@@ -568,14 +586,6 @@ impl Split {
             }
         }
         false
-    }
-
-    pub(crate) fn hash_nonground(&self) -> Digest {
-        let mut digest = Digest::default();
-        for literal in &self.literals {
-            literal.hash_nonground(&mut digest);
-        }
-        digest
     }
 }
 

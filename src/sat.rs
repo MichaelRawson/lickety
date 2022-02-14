@@ -1,3 +1,4 @@
+/*
 use crate::digest::{Digest, DigestMap, DigestSet};
 use crate::syntax::*;
 use crate::util::DefaultRng;
@@ -273,7 +274,7 @@ impl Solver {
         let sls = &mut self.sls;
         *self
             .atoms
-            .entry(atom.hash_grounded())
+            .entry(atom.digest_zero_vars())
             .or_insert_with(|| sls.fresh())
     }
 
@@ -289,7 +290,7 @@ impl Solver {
         let sls = &mut self.sls;
         *self
             .splits
-            .entry(split.hash_nonground())
+            .entry(split.digest_with_vars())
             .or_insert_with(|| sls.fresh())
     }
 
@@ -343,3 +344,4 @@ impl Solver {
         self.sls.unsat
     }
 }
+*/

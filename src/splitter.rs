@@ -36,7 +36,9 @@ impl UnionFind {
 fn symbol_comparison(left: &Literal, right: &Literal) -> Ordering {
     left.polarity
         .cmp(&right.polarity)
+        .then_with(|| left.weight().cmp(&right.weight()))
         .then_with(|| left.index_key().cmp(right.index_key()))
+        .reverse()
 }
 
 fn variable_comparison(
@@ -133,10 +135,7 @@ impl Normaliser {
         let variables = self.renaming.len();
         self.renaming.clear();
 
-        Split {
-            variables,
-            literals,
-        }
+        Split::new(variables, literals)
     }
 }
 
@@ -156,10 +155,7 @@ impl Splitter {
         } else if variables == 0 {
             return literals
                 .into_iter()
-                .map(|literal| Split {
-                    variables: 0,
-                    literals: vec![literal],
-                })
+                .map(|literal| Split::new(0, vec![literal]))
                 .collect();
         } else if literals.len() == 1 {
             return vec![self.normaliser.normalise(literals)];

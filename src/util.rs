@@ -78,7 +78,20 @@ pub(crate) enum Stack<'a, T> {
 }
 
 impl<'a, T> Stack<'a, T> {
-    pub(crate) fn iter(&'a self) -> StackIterator<'a, T> {
+    pub(crate) fn empty() -> Self {
+        Self::Nil
+    }
+
+    pub(crate) fn push(&'a self, top: T) -> Self {
+        Self::Cons(top, self)
+    }
+}
+
+impl<'a, T> IntoIterator for &'a Stack<'a, T> {
+    type Item = &'a T;
+    type IntoIter = StackIterator<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
         StackIterator(self)
     }
 }
@@ -98,6 +111,7 @@ impl<'a, T> Iterator for StackIterator<'a, T> {
         }
     }
 }
+
 pub(crate) struct DefaultRng(SmallRng);
 
 impl Default for DefaultRng {
