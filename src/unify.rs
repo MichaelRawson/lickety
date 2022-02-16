@@ -66,6 +66,14 @@ pub(crate) struct Unifier<'a> {
     bindings: Vec<Option<Offset<'a>>>,
 }
 
+impl Unifier<'static> {
+    pub(crate) fn recycle<'a>(&mut self, variables: usize) -> &mut Unifier<'a> {
+        self.bindings.clear();
+        self.bindings.resize(variables, None);
+        unsafe { std::mem::transmute(self) }
+    }
+}
+
 impl<'a> Unifier<'a> {
     fn occurs(&self, x: usize, offset: Offset<'a>) -> bool {
         for flat in offset.iter() {
@@ -147,12 +155,6 @@ impl<'a> Unifier<'a> {
             }
         }
         true
-    }
-
-    pub(crate) fn new(variables: usize) -> Self {
-        Self {
-            bindings: vec![None; variables],
-        }
     }
 
     pub(crate) fn unify_term(&mut self, left: Flat<'a>, right: Flat<'a>, offset: usize) -> bool {

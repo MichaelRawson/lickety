@@ -533,6 +533,21 @@ impl Literal {
             .map(|(left, right)| left == right)
             .unwrap_or_default()
     }
+
+    pub(crate) fn contains_tautology(literals: &[Self]) -> bool {
+        let mut literals = literals.iter();
+        while let Some(literal) = literals.next() {
+            if literal.is_equational_tautology() {
+                return true;
+            }
+            for other in literals.clone() {
+                if literal.polarity != other.polarity && literal.atom == other.atom {
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 impl fmt::Display for Literal {
@@ -559,6 +574,7 @@ impl Split {
             (unit.polarity, unit.atom.digest_zero_vars())
         } else {
             let mut digest = Digest::default();
+            digest.update(variables as isize);
             for literal in &literals {
                 literal.digest_with_vars(&mut digest);
             }
@@ -571,21 +587,6 @@ impl Split {
             polarity,
             digest,
         }
-    }
-
-    pub(crate) fn is_tautology(&self) -> bool {
-        let mut literals = self.literals.iter();
-        while let Some(literal) = literals.next() {
-            if literal.is_equational_tautology() {
-                return true;
-            }
-            for other in literals.clone() {
-                if literal.polarity != other.polarity && literal.atom == other.atom {
-                    return true;
-                }
-            }
-        }
-        false
     }
 }
 

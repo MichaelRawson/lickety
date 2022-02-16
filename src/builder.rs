@@ -58,7 +58,7 @@ impl Builder {
             .into_iter()
             .map(|literal| build_literal(&literal))
             .collect::<Vec<_>>();
-        let splits = self.splitter.split(literals, variables);
+        let splits = self.splitter.split_no_tautology_check(literals, variables);
         let clause = Clause { splits };
         let info = Info {
             source: Source::Equality,
@@ -161,14 +161,6 @@ impl Builder {
             .into_iter()
             .map(|literal| build_literal(&literal))
             .collect::<Vec<_>>();
-        for sref in literals.iter().flat_map(|literal| literal.symbols()) {
-            if sref.symbol.is_equality() {
-                self.equality = Some(sref)
-            } else if sref.symbol.arity > 0 {
-                self.congruence_symbols.insert(sref);
-            }
-        }
-
         let variables = literals
             .iter()
             .flat_map(|literal| literal.variables())
@@ -176,6 +168,23 @@ impl Builder {
             .map(|n| n + 1)
             .unwrap_or_default();
         let splits = self.splitter.split(literals, variables);
+        let splits = if let Some(splits) = splits {
+            splits
+        } else {
+            return;
+        };
+
+        let symbols = splits
+            .iter()
+            .flat_map(|split| &split.literals)
+            .flat_map(|literal| literal.symbols());
+        for sref in symbols {
+            if sref.symbol.is_equality() {
+                self.equality = Some(sref)
+            } else if sref.symbol.arity > 0 {
+                self.congruence_symbols.insert(sref);
+            }
+        }
 
         let index = self.matrix.clauses.len();
         if info.is_goal {

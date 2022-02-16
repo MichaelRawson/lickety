@@ -1,14 +1,20 @@
-/*
-use crate::digest::{Digest, DigestMap, DigestSet};
+use crate::digest::Digest;
 use crate::syntax::*;
-use crate::util::DefaultRng;
-use fnv::FnvHashSet;
+use fnv::{FnvHashMap, FnvHashSet};
 use std::os::raw::c_int;
 
-const SLS_ITERATIONS: usize = 1000;
 const PICOSAT_UNSATISFIABLE: c_int = 20;
 
-pub(crate) type SATLiteral = c_int;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct SATLiteral(c_int);
+
+impl std::ops::Not for SATLiteral {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        Self(-self.0)
+    }
+}
 
 #[repr(C)]
 struct PicoSAT {
@@ -18,330 +24,152 @@ struct PicoSAT {
 #[link(name = "picosat")]
 extern "C" {
     fn picosat_init() -> *mut PicoSAT;
-    fn picosat_add(sat: *mut PicoSAT, literal: c_int) -> c_int;
-    fn picosat_sat(sat: *mut PicoSAT, limit: c_int) -> c_int;
-    fn picosat_deref(sat: *mut PicoSAT, literal: c_int) -> c_int;
-    fn picosat_deref_toplevel(sat: *mut PicoSAT, literal: c_int) -> c_int;
+    fn picosat_reset(pico: *mut PicoSAT);
+    fn picosat_add(pico: *mut PicoSAT, literal: c_int) -> c_int;
+    fn picosat_sat(pico: *mut PicoSAT, limit: c_int) -> c_int;
+    fn picosat_deref_toplevel(pico: *mut PicoSAT, literal: c_int) -> c_int;
 }
 
-struct Cdcl(*mut PicoSAT);
+struct Cdcl {
+    pico: *mut PicoSAT,
+    cache: FnvHashSet<Digest>,
+}
 
 impl Default for Cdcl {
     fn default() -> Self {
-        let sat = unsafe { picosat_init() };
-        Self(sat)
+        let pico = unsafe { picosat_init() };
+        Self {
+            pico,
+            cache: FnvHashSet::default(),
+        }
+    }
+}
+
+impl Drop for Cdcl {
+    fn drop(&mut self) {
+        unsafe { picosat_reset(self.pico) }
     }
 }
 
 impl Cdcl {
-    fn assert(&mut self, clause: &[SATLiteral]) {
-        for literal in clause {
-            unsafe { picosat_add(self.0, *literal) };
-        }
-        unsafe { picosat_add(self.0, 0) };
-    }
-
-    fn forced(&self, literal: SATLiteral) -> bool {
-        let result = unsafe { picosat_deref_toplevel(self.0, literal) };
-        result != 0
-    }
-
-    fn value(&self, literal: SATLiteral) -> bool {
-        let result = unsafe { picosat_deref(self.0, literal) };
-        result == 1
-    }
-
-    fn solve(&mut self) -> bool {
-        let result = unsafe { picosat_sat(self.0, -1) };
-        result != PICOSAT_UNSATISFIABLE
-    }
-}
-
-struct Watch {
-    clause: usize,
-    rest: Option<Box<Watch>>,
-}
-
-struct Assignment(Vec<bool>);
-
-impl Default for Assignment {
-    fn default() -> Self {
-        Self(vec![false])
-    }
-}
-
-impl Assignment {
-    fn extend(&mut self) {
-        self.0.push(false);
-    }
-
-    fn flip(&mut self, index: usize) {
-        self.0[index] = !self.0[index];
-    }
-
-    fn value(&self, literal: SATLiteral) -> bool {
-        let polarity = literal > 0;
-        let atom = literal.abs();
-        self.0[atom as usize] == polarity
-    }
-}
-
-struct Sls {
-    cdcl: Cdcl,
-    rng: DefaultRng,
-    fresh: SATLiteral,
-    clauses: Vec<Vec<SATLiteral>>,
-    assignment: Assignment,
-    forced: Vec<bool>,
-    watch: Vec<Option<Box<Watch>>>,
-    unsatisfied: Vec<usize>,
-    candidate_literals: Vec<usize>,
-    unsat: bool,
-}
-
-impl Default for Sls {
-    fn default() -> Self {
-        Self {
-            cdcl: Cdcl::default(),
-            rng: DefaultRng::default(),
-            fresh: 1,
-            clauses: vec![],
-            assignment: Assignment::default(),
-            forced: vec![false],
-            watch: vec![None],
-            unsatisfied: vec![],
-            candidate_literals: vec![],
-            unsat: false,
-        }
-    }
-}
-
-impl Sls {
-    fn fresh(&mut self) -> SATLiteral {
-        let fresh = self.fresh;
-        self.fresh += 1;
-        self.assignment.extend();
-        self.forced.push(false);
-        self.watch.push(None);
-        fresh
-    }
-
-    fn flip(&mut self, index: usize) {
-        self.assignment.flip(index);
-        let mut watch = std::mem::take(&mut self.watch[index]);
-        while let Some(boxed) = watch {
-            let Watch { clause, rest } = *boxed;
-            if !self.satisfy(clause) {
-                self.unsatisfied.push(clause);
-            }
-            watch = rest;
-        }
-    }
-
-    fn satisfy(&mut self, clause: usize) -> bool {
-        if let Some(literal) = self.clauses[clause]
-            .iter()
-            .find(|literal| self.assignment.value(**literal))
-            .copied()
-        {
-            let index = literal.abs() as usize;
-            let rest = std::mem::take(&mut self.watch[index]);
-            let watch = Box::new(Watch { clause, rest });
-            self.watch[index] = Some(watch);
-            true
-        } else {
-            false
-        }
-    }
-
-    fn choose_unsatisfied(&mut self) -> Option<usize> {
-        while !self.unsatisfied.is_empty() {
-            let index = self.rng.index(self.unsatisfied.len());
-            let unsatisfied = self.unsatisfied.swap_remove(index);
-            if !self.satisfy(unsatisfied) {
-                return Some(unsatisfied);
-            }
-        }
-        None
-    }
-
-    fn choose_flip(&mut self, unsatisfied: usize) -> Option<usize> {
-        self.candidate_literals.extend(
-            self.clauses[unsatisfied]
-                .iter()
-                .map(|lit| lit.abs() as usize)
-                .filter(|index| !self.forced[*index]),
-        );
-        let result = self.rng.choose(&self.candidate_literals).copied();
-        self.candidate_literals.clear();
-        result
-    }
-
-    fn solve(&mut self) {
-        for _ in 0..SLS_ITERATIONS {
-            let unsatisfied = if let Some(unsatisfied) = self.choose_unsatisfied() {
-                unsatisfied
-            } else {
+    fn assert(&mut self, clause: &mut Vec<SATLiteral>) {
+        clause.sort_unstable();
+        clause.dedup();
+        for literal in clause.iter() {
+            if clause.contains(&!*literal) {
+                clause.clear();
                 return;
-            };
-            if let Some(index) = self.choose_flip(unsatisfied) {
-                self.flip(index);
-                assert!(self.satisfy(unsatisfied));
-            } else {
-                self.unsatisfied.push(unsatisfied);
-                break;
             }
         }
 
-        if self.unsatisfied.is_empty() {}
-        if !self.cdcl.solve() {
-            self.unsat = true;
-            return;
+        let mut digest = Digest::default();
+        for literal in clause.iter() {
+            digest.update(literal.0 as isize);
         }
-
-        for literal in 1..self.fresh {
-            let index = literal.abs() as usize;
-            self.forced[index] = self.cdcl.forced(literal);
-            if self.cdcl.value(literal) != self.assignment.value(literal) {
-                self.flip(index);
+        if self.cache.insert(digest) {
+            for literal in clause.iter() {
+                unsafe { picosat_add(self.pico, literal.0) };
             }
+            unsafe { picosat_add(self.pico, 0) };
         }
-        while let Some(unsatisfied) = self.unsatisfied.pop() {
-            assert!(self.satisfy(unsatisfied));
-        }
+        clause.clear();
     }
 
-    fn assert(&mut self, clause: Vec<SATLiteral>) {
-        if self.unsat {
-            return;
-        }
-        let mut iter = clause.iter().copied();
-        while let Some(literal) = iter.next() {
-            for other in iter.clone() {
-                if literal == -other {
-                    return;
-                }
-            }
-        }
-
-        /*
-        print!("cnf(1, axiom, $false");
-        for literal in &clause {
-            print!(" | ");
-            if *literal < 0 {
-                print!("~");
-            }
-            print!("p{}", literal.abs());
-        }
-        println!(").");
-        */
-        //println!("{:?}", clause);
-        if clause.len() == 1 {
-            let literal = clause[0];
-            let index = literal.abs() as usize;
-            self.forced[index] = true;
-            if !self.value(literal) {
-                self.flip(index);
-            }
-        }
-
-        self.cdcl.assert(&clause);
-        let index = self.clauses.len();
-        self.clauses.push(clause);
-        if !self.satisfy(index) {
-            self.unsatisfied.push(index);
-        }
-
-        self.solve();
+    fn forced_false(&self, literal: SATLiteral) -> bool {
+        let result = unsafe { picosat_deref_toplevel(self.pico, literal.0) };
+        result == -1
     }
 
-    fn value(&self, literal: SATLiteral) -> bool {
-        self.assignment.value(literal)
+    fn solve(&mut self, limit: Option<usize>) -> bool {
+        let limit = limit.map(|l| l as c_int).unwrap_or(-1);
+        let result = unsafe { picosat_sat(self.pico, limit) };
+        result != PICOSAT_UNSATISFIABLE
     }
 }
 
 #[derive(Default)]
 pub(crate) struct Solver {
-    sls: Sls,
-    atoms: DigestMap<SATLiteral>,
-    splits: DigestMap<SATLiteral>,
-    cache: DigestSet,
-    grounded: FnvHashSet<SATLiteral>,
+    cdcl: Cdcl,
+    map: FnvHashMap<Digest, SATLiteral>,
+    fresh: c_int,
+    deduction: Vec<SATLiteral>,
+    grounding: Vec<SATLiteral>,
 }
 
 impl Solver {
-    fn atom(&mut self, atom: &FlatBuf) -> SATLiteral {
-        let sls = &mut self.sls;
-        *self
-            .atoms
-            .entry(atom.digest_zero_vars())
-            .or_insert_with(|| sls.fresh())
+    fn atom(&mut self, polarity: bool, digest: Digest) -> (bool, SATLiteral) {
+        let mut new = false;
+        let mut label = *self.map.entry(digest).or_insert_with(|| {
+            new = true;
+            self.fresh += 1;
+            SATLiteral(self.fresh as c_int)
+        });
+        if !polarity {
+            label = !label;
+        }
+        (new, label)
     }
 
-    pub(crate) fn literal(&mut self, literal: &Literal) -> SATLiteral {
-        let mut sat = self.atom(&literal.atom);
-        if !literal.polarity {
-            sat = -sat;
-        }
-        sat
+    pub(crate) fn literal_zero_vars(&mut self, literal: &Literal) -> SATLiteral {
+        let digest = literal.atom.digest_zero_vars();
+        let (_, label) = self.atom(literal.polarity, digest);
+        label
     }
 
-    fn proper_split(&mut self, split: &Split) -> SATLiteral {
-        let sls = &mut self.sls;
-        *self
-            .splits
-            .entry(split.digest_with_vars())
-            .or_insert_with(|| sls.fresh())
-    }
-
-    pub(crate) fn split(&mut self, split: &Split) -> SATLiteral {
-        if split.variables == 0 {
-            self.literal(&split.literals[0])
-        } else {
-            self.proper_split(split)
-        }
-    }
-
-    pub(crate) fn assert(&mut self, mut clause: Vec<SATLiteral>) {
-        clause.sort_unstable();
-        clause.dedup();
-        let mut digest = Digest::default();
-        for literal in &clause {
-            digest.update(*literal as isize);
-        }
-        if self.cache.insert(digest) {
-            self.sls.assert(clause);
-        }
-    }
-
-    pub(crate) fn ground_split(&mut self, split: &Split, label: SATLiteral) {
-        if split.variables == 0 || !self.grounded.insert(label) {
-            return;
-        }
-
-        let mut sat_clause = vec![-label];
+    fn ground(&mut self, split: &Split, label: SATLiteral) {
+        self.grounding.push(!label);
         for literal in &split.literals {
-            sat_clause.push(self.literal(literal));
+            let literal = self.literal_zero_vars(literal);
+            self.grounding.push(literal);
         }
-        self.assert(sat_clause);
+        self.cdcl.assert(&mut self.grounding);
     }
 
-    pub(crate) fn assert_input_clause(&mut self, clause: &Clause) {
-        let mut sat_clause = vec![];
+    pub(crate) fn label(&mut self, split: &Split) -> SATLiteral {
+        let (new, label) = self.atom(split.polarity, split.digest);
+        if new && split.variables > 0 {
+            self.ground(split, label);
+        }
+        label
+    }
+
+    pub(crate) fn forced_false(&self, label: SATLiteral) -> bool {
+        self.cdcl.forced_false(label)
+    }
+
+    pub(crate) fn axiom(&mut self, clause: &Clause) {
         for split in &clause.splits {
-            let split_label = self.split(split);
-            self.ground_split(split, split_label);
-            sat_clause.push(split_label);
+            let label = self.label(split);
+            self.deduction.push(label);
         }
-        self.assert(sat_clause);
+        self.cdcl.assert(&mut self.deduction)
     }
 
-    pub(crate) fn value(&self, sat: SATLiteral) -> bool {
-        self.sls.value(sat)
+    pub(crate) fn unary_deduction(&mut self, premise: SATLiteral, conclusions: &[Split]) {
+        self.deduction.push(!premise);
+        for conclusion in conclusions {
+            let label = self.label(conclusion);
+            self.deduction.push(label);
+        }
+        self.cdcl.assert(&mut self.deduction);
     }
 
-    pub(crate) fn unsat(&mut self) -> bool {
-        self.sls.unsat
+    pub(crate) fn binary_deduction(
+        &mut self,
+        premise1: SATLiteral,
+        premise2: SATLiteral,
+        conclusions: &[Split],
+    ) {
+        self.deduction.push(!premise1);
+        self.deduction.push(!premise2);
+        for conclusion in conclusions {
+            let label = self.label(conclusion);
+            self.deduction.push(label);
+        }
+        self.cdcl.assert(&mut self.deduction);
+    }
+
+    pub(crate) fn solve(&mut self, limit: Option<usize>) -> bool {
+        self.cdcl.solve(limit)
     }
 }
-*/

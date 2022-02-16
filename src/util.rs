@@ -1,7 +1,3 @@
-use rand::rngs::SmallRng;
-use rand::seq::SliceRandom;
-use rand::{Rng, SeedableRng};
-
 #[derive(Default, Debug)]
 pub(crate) struct Renaming(Vec<usize>);
 
@@ -109,23 +105,5 @@ impl<'a, T> Iterator for StackIterator<'a, T> {
                 Some(t)
             }
         }
-    }
-}
-
-pub(crate) struct DefaultRng(SmallRng);
-
-impl Default for DefaultRng {
-    fn default() -> Self {
-        Self(SmallRng::seed_from_u64(0))
-    }
-}
-
-impl DefaultRng {
-    pub(crate) fn index(&mut self, max: usize) -> usize {
-        self.0.gen_range(0..max)
-    }
-
-    pub(crate) fn choose<'a, T>(&mut self, slice: &'a [T]) -> Option<&'a T> {
-        slice.choose(&mut self.0)
     }
 }

@@ -1,4 +1,5 @@
 use crate::digest::Digest;
+use crate::sat::{SATLiteral, Solver};
 use crate::splitter::Splitter;
 use crate::syntax::*;
 use crate::unify::Unifier;
@@ -7,30 +8,42 @@ use fnv::FnvHashMap;
 
 struct PathEntry<'a> {
     split: &'a Split,
+    label: SATLiteral,
 }
 
 type Path<'a> = &'a Stack<'a, PathEntry<'a>>;
 
 struct Search<'matrix> {
     matrix: &'matrix Matrix,
+    unifier: Unifier<'static>,
     splitter: Splitter,
+    solver: Solver,
 }
 
 impl<'matrix> Search<'matrix> {
     fn new(matrix: &'matrix Matrix) -> Self {
+        let unifier = Unifier::default();
         let splitter = Splitter::default();
-        Self { matrix, splitter }
+        let solver = Solver::default();
+        Self {
+            matrix,
+            unifier,
+            splitter,
+            solver,
+        }
     }
 
     fn go(&mut self) -> bool {
         let mut limit = 1;
-        while !self.start(limit) {
+        for (clause, _) in &self.matrix.clauses {
+            self.solver.axiom(clause);
+        }
+        while self.solver.solve(None) && !self.start(limit) {
             limit += 1;
         }
         true
     }
 
-    #[must_use]
     fn start(&mut self, limit: usize) -> bool {
         let mut cache = FnvHashMap::default();
         for index in &self.matrix.goal_clauses {
@@ -43,17 +56,16 @@ impl<'matrix> Search<'matrix> {
         false
     }
 
-    #[must_use]
     fn factor(
         &mut self,
         cache: &mut FnvHashMap<(bool, Digest), bool>,
         limit: usize,
         path: Path,
         goal: &Split,
-        goal_index: usize,
+        goal_label: SATLiteral,
         factor_index: usize,
     ) -> bool {
-        let goal_literal = &goal.literals[goal_index];
+        let goal_literal = &goal.literals[0];
         let factor_literal = &goal.literals[factor_index];
         if factor_literal.polarity != goal_literal.polarity
             || !Flat::might_unify(factor_literal.atom.flat(), goal_literal.atom.flat())
@@ -61,49 +73,49 @@ impl<'matrix> Search<'matrix> {
             return false;
         }
 
-        let mut unifier = Unifier::new(goal.variables);
+        let unifier = self.unifier.recycle(goal.variables);
         if !unifier.unify_literal(goal_literal, factor_literal, 0) {
             return false;
         }
 
-        let literals = goal
-            .literals
+        let literals = goal.literals[1..]
             .iter()
-            .enumerate()
-            .filter(|(index, _)| *index != goal_index)
-            .map(|(_, literal)| unifier.apply_literal(literal, 0))
+            .map(|literal| unifier.apply_literal(literal, 0))
             .collect();
 
         let splits = self.splitter.split(literals, goal.variables);
+        let splits = if let Some(splits) = splits {
+            splits
+        } else {
+            return false;
+        };
+        self.solver.unary_deduction(goal_label, &splits);
         self.prove_all(cache, limit, path, splits.iter())
     }
 
-    #[must_use]
     fn resolve(
         &mut self,
         cache: &mut FnvHashMap<(bool, Digest), bool>,
         limit: usize,
         path: Path,
         goal: &Split,
-        goal_index: usize,
+        goal_label: SATLiteral,
         split: &Split,
+        split_label: Option<SATLiteral>,
         split_index: usize,
     ) -> bool {
-        let goal_literal = &goal.literals[goal_index];
+        let goal_literal = &goal.literals[0];
         let split_literal = &split.literals[split_index];
 
         let variables = goal.variables + split.variables;
-        let mut unifier = Unifier::new(variables);
+        let unifier = self.unifier.recycle(variables);
         if !unifier.unify_literal(goal_literal, split_literal, goal.variables) {
             return false;
         }
 
-        let literals = goal
-            .literals
+        let literals = goal.literals[1..]
             .iter()
-            .enumerate()
-            .filter(|(index, _)| *index != goal_index)
-            .map(|(_, literal)| unifier.apply_literal(literal, 0))
+            .map(|literal| unifier.apply_literal(literal, 0))
             .chain(
                 split
                     .literals
@@ -114,6 +126,14 @@ impl<'matrix> Search<'matrix> {
             );
 
         let splits = self.splitter.split(literals.collect(), variables);
+        let splits = if let Some(splits) = splits {
+            splits
+        } else {
+            return false;
+        };
+        let split_label = split_label.unwrap_or_else(|| self.solver.label(split));
+        self.solver
+            .binary_deduction(goal_label, split_label, &splits);
         self.prove_all(cache, limit, path, splits.iter())
     }
 
@@ -135,79 +155,87 @@ impl<'matrix> Search<'matrix> {
         true
     }
 
-    #[must_use]
     fn prove(&mut self, limit: usize, path: Path, goal: &Split) -> bool {
-        if goal.literals.len() >= limit
-            || goal.is_tautology()
-            || path.into_iter().any(|entry| {
-                entry.split.polarity == goal.polarity && entry.split.digest == goal.digest
-            })
-        {
+        if goal.literals.len() >= limit {
             return false;
         }
 
-        let entry = PathEntry { split: goal };
+        let goal_label = self.solver.label(goal);
+        if self.solver.forced_false(goal_label) {
+            return true;
+        }
+        if path.into_iter().any(|entry| entry.label == goal_label) {
+            return false;
+        }
+
+        let goal_literal = &goal.literals[0];
+        let entry = PathEntry {
+            split: goal,
+            label: goal_label,
+        };
         let path = path.push(entry);
         let mut cache = FnvHashMap::default();
 
-        for (goal_index, goal_literal) in goal.literals.iter().enumerate() {
-            // factoring
-            for factor_index in 0..goal_index {
-                if self.factor(&mut cache, limit, &path, goal, goal_index, factor_index) {
-                    return true;
-                }
+        // factoring
+        for factor_index in 1..goal.literals.len() {
+            if self.factor(&mut cache, limit, &path, goal, goal_label, factor_index) {
+                return true;
             }
+        }
 
-            // ancestor resolution
-            for entry in path.into_iter().skip(1) {
-                let split = entry.split;
-                for (split_index, split_literal) in split.literals.iter().enumerate() {
-                    if split_literal.polarity != goal_literal.polarity
-                        && Flat::might_unify(split_literal.atom.flat(), goal_literal.atom.flat())
-                        && self.resolve(
-                            &mut cache,
-                            limit,
-                            &path,
-                            goal,
-                            goal_index,
-                            split,
-                            split_index,
-                        )
-                    {
-                        return true;
-                    }
-                }
-            }
-
-            // input resolution
-            for location in self.matrix.predicates[!goal_literal.polarity as usize]
-                .query(goal_literal.index_key(), true, true)
-                .flatten()
-            {
-                let clause = &self.matrix.clauses[location.clause].0;
-                let split = &clause.splits[location.split];
-                let split_index = location.literal;
-                if self.resolve(
+        // ancestor resolution
+        for entry in path.into_iter().skip(1) {
+            let split = entry.split;
+            let split_label = Some(entry.label);
+            let split_index = 0;
+            let split_literal = &split.literals[split_index];
+            if split_literal.polarity != goal_literal.polarity
+                && Flat::might_unify(split_literal.atom.flat(), goal_literal.atom.flat())
+                && self.resolve(
                     &mut cache,
                     limit,
                     &path,
                     goal,
-                    goal_index,
+                    goal_label,
                     split,
+                    split_label,
                     split_index,
-                ) && self.prove_all(
-                    &mut cache,
-                    limit,
-                    &path,
-                    clause
-                        .splits
-                        .iter()
-                        .enumerate()
-                        .filter(|(index, _)| *index != location.split)
-                        .map(|(_, split)| split),
-                ) {
-                    return true;
-                }
+                )
+            {
+                return true;
+            }
+        }
+
+        // input resolution
+        for location in self.matrix.predicates[!goal_literal.polarity as usize]
+            .query(goal_literal.index_key(), true, true)
+            .flatten()
+        {
+            let clause = &self.matrix.clauses[location.clause].0;
+            let split = &clause.splits[location.split];
+            let split_index = location.literal;
+
+            if self.resolve(
+                &mut cache,
+                limit,
+                &path,
+                goal,
+                goal_label,
+                split,
+                None,
+                split_index,
+            ) && self.prove_all(
+                &mut cache,
+                limit,
+                &path,
+                clause
+                    .splits
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| *index != location.split)
+                    .map(|(_, split)| split),
+            ) {
+                return true;
             }
         }
 
