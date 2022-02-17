@@ -84,11 +84,6 @@ impl<'matrix> Search<'matrix> {
             .collect();
 
         let splits = self.splitter.split(literals, goal.variables);
-        let splits = if let Some(splits) = splits {
-            splits
-        } else {
-            return false;
-        };
         self.solver.unary_deduction(goal_label, &splits);
         self.prove_all(cache, limit, path, splits.iter())
     }
@@ -113,6 +108,7 @@ impl<'matrix> Search<'matrix> {
             return false;
         }
 
+        let split_label = split_label.unwrap_or_else(|| self.solver.label(split));
         let literals = goal.literals[1..]
             .iter()
             .map(|literal| unifier.apply_literal(literal, 0))
@@ -124,14 +120,7 @@ impl<'matrix> Search<'matrix> {
                     .filter(|(index, _)| *index != split_index)
                     .map(|(_, literal)| unifier.apply_literal(literal, goal.variables)),
             );
-
         let splits = self.splitter.split(literals.collect(), variables);
-        let splits = if let Some(splits) = splits {
-            splits
-        } else {
-            return false;
-        };
-        let split_label = split_label.unwrap_or_else(|| self.solver.label(split));
         self.solver
             .binary_deduction(goal_label, split_label, &splits);
         self.prove_all(cache, limit, path, splits.iter())
@@ -159,13 +148,13 @@ impl<'matrix> Search<'matrix> {
         if goal.literals.len() >= limit {
             return false;
         }
+        if path.into_iter().any(|entry| entry.split == goal) {
+            return false;
+        }
 
         let goal_label = self.solver.label(goal);
         if self.solver.forced_false(goal_label) {
             return true;
-        }
-        if path.into_iter().any(|entry| entry.label == goal_label) {
-            return false;
         }
 
         let goal_literal = &goal.literals[0];
@@ -187,22 +176,22 @@ impl<'matrix> Search<'matrix> {
         for entry in path.into_iter().skip(1) {
             let split = entry.split;
             let split_label = Some(entry.label);
-            let split_index = 0;
-            let split_literal = &split.literals[split_index];
-            if split_literal.polarity != goal_literal.polarity
-                && Flat::might_unify(split_literal.atom.flat(), goal_literal.atom.flat())
-                && self.resolve(
-                    &mut cache,
-                    limit,
-                    &path,
-                    goal,
-                    goal_label,
-                    split,
-                    split_label,
-                    split_index,
-                )
-            {
-                return true;
+            for (split_index, split_literal) in split.literals.iter().enumerate() {
+                if split_literal.polarity != goal_literal.polarity
+                    && Flat::might_unify(split_literal.atom.flat(), goal_literal.atom.flat())
+                    && self.resolve(
+                        &mut cache,
+                        limit,
+                        &path,
+                        goal,
+                        goal_label,
+                        split,
+                        split_label,
+                        split_index,
+                    )
+                {
+                    return true;
+                }
             }
         }
 

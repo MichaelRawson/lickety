@@ -149,18 +149,7 @@ pub(crate) struct Splitter {
 }
 
 impl Splitter {
-    pub(crate) fn split(&mut self, literals: Vec<Literal>, variables: usize) -> Option<Vec<Split>> {
-        if Literal::contains_tautology(&literals) {
-            return None;
-        }
-        Some(self.split_no_tautology_check(literals, variables))
-    }
-
-    pub(crate) fn split_no_tautology_check(
-        &mut self,
-        literals: Vec<Literal>,
-        variables: usize,
-    ) -> Vec<Split> {
+    pub(crate) fn split(&mut self, literals: Vec<Literal>, variables: usize) -> Vec<Split> {
         if literals.is_empty() {
             return vec![];
         }

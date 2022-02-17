@@ -58,7 +58,7 @@ impl Builder {
             .into_iter()
             .map(|literal| build_literal(&literal))
             .collect::<Vec<_>>();
-        let splits = self.splitter.split_no_tautology_check(literals, variables);
+        let splits = self.splitter.split(literals, variables);
         let clause = Clause { splits };
         let info = Info {
             source: Source::Equality,
@@ -168,11 +168,6 @@ impl Builder {
             .map(|n| n + 1)
             .unwrap_or_default();
         let splits = self.splitter.split(literals, variables);
-        let splits = if let Some(splits) = splits {
-            splits
-        } else {
-            return;
-        };
 
         let symbols = splits
             .iter()

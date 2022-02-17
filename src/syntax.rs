@@ -290,24 +290,12 @@ impl FlatCell {
         }
     }
 
-    fn digest_with_vars(self, digest: &mut Digest) {
+    fn digest(self, digest: &mut Digest) {
         let code = match self {
             FlatCell::Variable(x) => -(x as isize),
             FlatCell::Symbol(f, _) => f.symbol.number as isize,
         };
         digest.update(code);
-    }
-
-    fn digest_zero_vars(self, digest: &mut Digest) {
-        match self {
-            FlatCell::Variable(_) => {
-                digest.zero();
-            }
-            FlatCell::Symbol(f, _) => {
-                let code = f.symbol.number as isize;
-                digest.update(code);
-            }
-        }
     }
 }
 
@@ -327,31 +315,9 @@ impl<'a> Flat<'a> {
         self.into_iter().map(FlatCell::symbol)
     }
 
-    fn as_equation(self) -> Option<(Self, Self)> {
-        let f = if let FlatCell::Symbol(f, _) = self.0[0] {
-            f
-        } else {
-            return None;
-        };
-        if !f.symbol.is_equality() {
-            return None;
-        }
-        let args = &self.0[1..];
-        let jump = args[0].jump();
-        let left = Self(&args[..jump]);
-        let right = Self(&args[jump..]);
-        Some((left, right))
-    }
-
-    fn digest_zero_vars(self, digest: &mut Digest) {
+    fn digest(self, digest: &mut Digest) {
         for flat in self.0 {
-            flat.digest_zero_vars(digest);
-        }
-    }
-
-    fn digest_with_vars(self, digest: &mut Digest) {
-        for flat in self.0 {
-            flat.digest_with_vars(digest);
+            flat.digest(digest);
         }
     }
 
@@ -455,12 +421,6 @@ impl FlatBuf {
         }
     }
 
-    pub(crate) fn digest_zero_vars(&self) -> Digest {
-        let mut digest = Digest::default();
-        self.flat().digest_zero_vars(&mut digest);
-        digest
-    }
-
     pub(crate) fn flat(&self) -> Flat {
         Flat(&self.0)
     }
@@ -513,41 +473,6 @@ impl Literal {
     pub(crate) fn rename(&mut self, renaming: &mut Renaming) {
         Rc::make_mut(&mut self.atom).rename(renaming);
     }
-
-    fn digest_with_vars(&self, digest: &mut Digest) {
-        if !self.polarity {
-            digest.zero();
-        }
-        self.atom.flat().digest_with_vars(digest);
-    }
-
-    pub(crate) fn as_equation(&self) -> Option<(Flat, Flat)> {
-        self.atom.flat().as_equation()
-    }
-
-    fn is_equational_tautology(&self) -> bool {
-        if !self.polarity {
-            return false;
-        }
-        self.as_equation()
-            .map(|(left, right)| left == right)
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn contains_tautology(literals: &[Self]) -> bool {
-        let mut literals = literals.iter();
-        while let Some(literal) = literals.next() {
-            if literal.is_equational_tautology() {
-                return true;
-            }
-            for other in literals.clone() {
-                if literal.polarity != other.polarity && literal.atom == other.atom {
-                    return true;
-                }
-            }
-        }
-        false
-    }
 }
 
 impl fmt::Display for Literal {
@@ -561,24 +486,36 @@ impl fmt::Display for Literal {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Split {
-    pub(crate) variables: usize,
-    pub(crate) literals: Vec<Literal>,
     pub(crate) polarity: bool,
     pub(crate) digest: Digest,
+    pub(crate) variables: usize,
+    pub(crate) literals: Vec<Literal>,
 }
+
+impl PartialEq for Split {
+    fn eq(&self, other: &Self) -> bool {
+        self.polarity == other.polarity && self.digest == other.digest
+    }
+}
+
+impl Eq for Split {}
 
 impl Split {
     pub(crate) fn new(variables: usize, literals: Vec<Literal>) -> Self {
-        let (polarity, digest) = if variables == 0 {
+        let mut digest = Digest::default();
+        let polarity = if variables == 0 {
             let unit = &literals[0];
-            (unit.polarity, unit.atom.digest_zero_vars())
+            unit.atom.flat().digest(&mut digest);
+            unit.polarity
         } else {
-            let mut digest = Digest::default();
             digest.update(variables as isize);
             for literal in &literals {
-                literal.digest_with_vars(&mut digest);
+                if !literal.polarity {
+                    digest.zero();
+                }
+                literal.atom.flat().digest(&mut digest);
             }
-            (true, digest)
+            true
         };
 
         Self {

@@ -93,42 +93,16 @@ pub(crate) struct Solver {
     map: FnvHashMap<Digest, SATLiteral>,
     fresh: c_int,
     deduction: Vec<SATLiteral>,
-    grounding: Vec<SATLiteral>,
 }
 
 impl Solver {
-    fn atom(&mut self, polarity: bool, digest: Digest) -> (bool, SATLiteral) {
-        let mut new = false;
-        let mut label = *self.map.entry(digest).or_insert_with(|| {
-            new = true;
-            self.fresh += 1;
-            SATLiteral(self.fresh as c_int)
-        });
-        if !polarity {
-            label = !label;
-        }
-        (new, label)
-    }
-
-    pub(crate) fn literal_zero_vars(&mut self, literal: &Literal) -> SATLiteral {
-        let digest = literal.atom.digest_zero_vars();
-        let (_, label) = self.atom(literal.polarity, digest);
-        label
-    }
-
-    fn ground(&mut self, split: &Split, label: SATLiteral) {
-        self.grounding.push(!label);
-        for literal in &split.literals {
-            let literal = self.literal_zero_vars(literal);
-            self.grounding.push(literal);
-        }
-        self.cdcl.assert(&mut self.grounding);
-    }
-
     pub(crate) fn label(&mut self, split: &Split) -> SATLiteral {
-        let (new, label) = self.atom(split.polarity, split.digest);
-        if new && split.variables > 0 {
-            self.ground(split, label);
+        let mut label = *self.map.entry(split.digest).or_insert_with(|| {
+            self.fresh += 1;
+            SATLiteral(self.fresh)
+        });
+        if !split.polarity {
+            label = !label;
         }
         label
     }

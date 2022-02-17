@@ -56,7 +56,9 @@ impl Options {
 
 fn main() -> anyhow::Result<()> {
     let opts = Options::parse();
-    opts.launch_timeout_thread();
+    if !opts.dump_nf {
+        opts.launch_timeout_thread();
+    }
 
     let matrix = tptp::load(&opts.path)?;
     if opts.dump_nf {
